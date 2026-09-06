@@ -38,49 +38,48 @@ where
         // geometry; on a miss we clear the cache so `Cache::draw` below
         // re-runs the closure. The perf HUD and the visual-bell flash are
         // NOT part of the key: both are drawn as their own fresh top layers.
-        let (content_epoch, search_generation, pending_scroll) = {
-            let s = match self.state.lock() {
+        let (content_epoch, search_generation) = {
+            let mut s = match self.state.lock() {
                 Ok(s) => s,
                 Err(p) => p.into_inner(),
             };
-            // Clamp the queued target to the current scrollback extent so
-            // it stays valid after any resize/reflow between when it was
-            // queued and this draw. Lets a caller pass `i32::MAX` to mean
-            // "scroll to the very top" (the transcript viewer opens there)
-            // and resolve it against the post-reflow line count; search
-            // targets are already in range, so the clamp is a no-op for
-            // them.
-            let pending = s.pending_scroll.take().map(|target| {
-                use alacritty_terminal::grid::Dimensions;
-                let grid = s.backend.term.grid();
-                let max = grid.total_lines().saturating_sub(grid.screen_lines()) as i32;
-                target.clamp(0, max)
-            });
-            (s.render_epoch(), s.search_generation(), pending)
-        };
-        // A search step / open queued a scroll target (the active match's row);
-        // apply it before the render key so this frame draws at that offset and
-        // the match highlight lands in view. Consumed once (Cell::take).
-        if let Some(target) = pending_scroll {
-            widget_state.scroll_offset.set(target);
-        }
-        // PuTTY "reset scrollback on display activity": the render epoch
-        // advances only on terminal output (process / sync-flush / palette),
-        // never on scroll or cursor blink, so an epoch change since the last
-        // draw means new activity. Jump to the live edge before the render
-        // key is built so this frame draws at the bottom. Draw is `&self`,
-        // hence the `Cell`s. Once-per-epoch by construction (the guard
-        // updates `last_draw_epoch`), so the user can still scroll back
-        // between two output batches and it sticks until the next one.
-        if self.reset_scroll_on_output {
-            let changed = widget_state
-                .last_draw_epoch
-                .get()
-                .is_some_and(|e| e != content_epoch);
-            if changed && widget_state.scroll_offset.get() != 0 {
-                widget_state.scroll_offset.set(0);
+            let content_epoch = s.render_epoch();
+            // A search step / open queued a scroll target (the active
+            // match's row), or the byte funnel queued the live edge for a
+            // keypress snap: apply it before the render key so this frame
+            // draws there and the match highlight lands in view. Consumed
+            // once (Cell::take). The target is an absolute offset resolved
+            // against the grid as it is NOW, so `i32::MAX` means "the very
+            // top" (the transcript viewer opens there) after any reflow
+            // between the queue and this draw.
+            if let Some(target) = s.pending_scroll.take() {
+                s.scroll_viewport_to(target);
             }
-        }
+            // PuTTY "reset scrollback on display activity": the render
+            // epoch advances only on terminal output (process / sync-flush
+            // / palette), never on scroll or cursor blink, so an epoch
+            // change since the last draw means new activity. Jump to the
+            // live edge before the render key is built so this frame draws
+            // at the bottom. Once-per-epoch by construction (the guard
+            // updates `last_draw_epoch`), so the user can still scroll back
+            // between two output batches and it sticks until the next one.
+            // With the toggle off, a scrolled-up viewport HOLDS its rows
+            // through the output instead: the grid raises its own
+            // `display_offset` as lines scroll into history, and the
+            // mirror below picks that up.
+            if self.reset_scroll_on_output {
+                let changed = widget_state
+                    .last_draw_epoch
+                    .get()
+                    .is_some_and(|e| e != content_epoch);
+                if changed && s.viewport_offset() != 0 {
+                    s.scroll_viewport_to(0);
+                }
+            }
+            // Draw is `&self`, hence the `Cell`s.
+            widget_state.scroll_offset.set(s.viewport_offset());
+            (content_epoch, s.search_generation())
+        };
         widget_state.last_draw_epoch.set(Some(content_epoch));
         let render_key = RenderKey {
             epoch: content_epoch,
@@ -257,28 +256,21 @@ where
             }
 
             // Alt-screen apps (top, vim, less, htop, …) own the entire
-            // viewport with cursor positioning, there's no scrollback to
-            // page through. Force scroll_offset=0 so the user can't get
-            // stuck looking at stale history while the app keeps redrawing.
+            // viewport with cursor positioning. The alternate grid has no
+            // scrollback, so its `display_offset` is 0 on its own, and the
+            // primary buffer's position waits underneath for the round
+            // trip.
             let in_alt_screen = state
                 .backend
                 .term
                 .mode()
                 .contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
 
-            // Clamp scroll offset against the current grid bounds, resizes
-            // between frames can shrink history, so the offset stored in
-            // widget_state may exceed the new max.
-            let scroll_offset = if in_alt_screen {
-                0
-            } else {
-                let grid = state.backend.term.grid();
-                let max_scroll = grid.total_lines().saturating_sub(grid.screen_lines()) as i32;
-                widget_state.scroll_offset.get().clamp(0, max_scroll)
-            };
-            // Preserve the resolved viewport position for actions outside the
-            // widget, such as the tab menu's visible-screen export.
-            state.set_viewport_scroll_offset(scroll_offset);
+            // The grid's own viewport offset, read AFTER the resize above:
+            // a taller or shorter window moves it to keep the same rows in
+            // view, and the mirror has to agree with what this frame draws.
+            let scroll_offset = state.viewport_offset();
+            widget_state.scroll_offset.set(scroll_offset);
 
             // Faint PRIMARY ghost: the demoted rectangle of the
             // last selection, shown only when no live highlight is
@@ -349,13 +341,13 @@ where
             }
 
             // --- Pass 1: collect cell data and build row character map ---
-            // Iterate the grid manually using `scroll_offset` as a row offset
-            // instead of mutating alacritty's `display_offset` via
-            // `scroll_display`. The previous approach yielded `display_iter`
-            // entries with negative `point.line.0` for scrollback rows, which
-            // when cast to `u16` wrapped to enormous numbers, those cells
-            // ended up rendered far off-screen, leaving blank rows in their
-            // place. Manual indexing keeps the math sane.
+            // `scroll_offset` IS alacritty's `display_offset` (see the
+            // widget-state field), but the rows are indexed by hand rather
+            // than through `display_iter`: that iterator yields scrollback
+            // rows with a negative `point.line.0`, which cast to `u16`
+            // wrapped to enormous numbers and rendered those cells far
+            // off-screen, leaving blank rows in their place. Manual
+            // indexing keeps the math sane.
             let cells_start = perf_on.then(std::time::Instant::now);
             cells.reserve(screen_lines * cols_count);
             row_chars.reserve(screen_lines);

@@ -166,10 +166,18 @@ pub struct TerminalWidgetState {
     /// the last selection IS the clipboard, so the band stays an honest
     /// cue for the paste gestures either way.
     primary_ghost: Option<(Selection, u16, usize)>,
-    /// Lines scrolled back (0 = bottom). A `Cell` so the immutable-`&self`
-    /// draw can reset it to the live edge on new output (PuTTY's "reset
-    /// scrollback on display activity"); every other mutation is in
-    /// `update` under `&mut State`, where `Cell` is equally fine.
+    /// Mirror of the grid's `display_offset` (lines above the live edge,
+    /// 0 = bottom) as of the last write or the last draw. The grid is the
+    /// authority: every scroll gesture goes through
+    /// `TerminalState::scroll_viewport_by` / `_to`, which lets alacritty keep
+    /// the same rows on screen while output runs (including once the
+    /// scrollback is full), across a resize, a clear-scrollback and an
+    /// alt-screen round trip. This copy serves the sites with no lock in
+    /// hand (hit-tests, the render key, the scrollbar geometry); between
+    /// an output batch and the frame that draws it, it lags the grid by
+    /// that batch, so a hit-test that already holds the lock reads the
+    /// grid instead. A `Cell` because the immutable-`&self` draw refreshes
+    /// it.
     scroll_offset: std::cell::Cell<i32>,
     /// `render_epoch` observed by the last draw, so the next draw can
     /// tell whether new terminal activity landed (drives the
@@ -307,8 +315,9 @@ struct RenderKey {
     /// `TerminalState::render_epoch` snapshot: covers grid content, cursor
     /// position/shape, alt-screen mode, scrollback size and palette.
     epoch: u64,
-    /// Raw (unclamped) scrollback offset; combined with `epoch` this fixes
-    /// the clamped value the draw actually uses.
+    /// The grid's `display_offset` as refreshed by this frame's first lock
+    /// (pending target and reset-on-output applied), so a scroll alone
+    /// repaints without an epoch bump.
     scroll_offset: i32,
     selection: Option<Selection>,
     /// The PRIMARY ghost band's range when it is eligible to draw (no

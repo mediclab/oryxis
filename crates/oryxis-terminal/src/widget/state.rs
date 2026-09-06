@@ -36,17 +36,13 @@ pub struct TerminalState {
     /// the match highlights under the same lock, and so a step / rebuild
     /// survives across frames.
     pub search: Option<crate::widget::search::BufferSearch>,
-    /// A scroll-back offset the widget should snap to on the next draw
-    /// (C1: center the active search match). `Cell` so the immutable
-    /// draw pass can consume it, mirroring `reset_scroll_on_output`.
+    /// An absolute scroll-back offset the widget should move to on the
+    /// next draw: the row that centers the active search match (C1), 0
+    /// for the keypress snap to the live edge, `i32::MAX` for the top of
+    /// the buffer. Resolved against the grid when applied
+    /// ([`Self::scroll_viewport_to`]). `Cell` so the immutable draw pass
+    /// can consume it, mirroring `reset_scroll_on_output`.
     pub pending_scroll: std::cell::Cell<Option<i32>>,
-    /// The scrollback offset of the viewport most recently drawn by the
-    /// widget. Kept on the terminal state so app-level actions can export
-    /// exactly what the user is looking at, rather than the whole buffer.
-    /// The widget owns the live value; this is a copy, only as fresh as the
-    /// pane's last frame, which is why the menu entry reading it is offered
-    /// only while the pane is on screen.
-    viewport_scroll_offset: i32,
     /// The OSC 8 hyperlink under the pointer (C3), for the app's reveal
     /// chip. `None` when the pointer is over no explicit link. Updated by
     /// the widget's hover handler under the render lock.
@@ -82,7 +78,7 @@ impl TerminalState {
         let (pty, rx) =
             PtyHandle::spawn_command(cols, rows, None, &[], cwd, env, &backend.event_proxy)?;
         let palette = TerminalPalette::default();
-        Ok((Self { backend, pty: Some(pty), palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), viewport_scroll_offset: 0, hovered_link: None, preedit: String::new() }, rx))
+        Ok((Self { backend, pty: Some(pty), palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new() }, rx))
     }
 
     /// Like `new` but spawns an explicit program (e.g. PowerShell or
@@ -115,7 +111,7 @@ impl TerminalState {
             cols, rows, Some(program), args, cwd, env, &backend.event_proxy,
         )?;
         let palette = TerminalPalette::default();
-        Ok((Self { backend, pty: Some(pty), palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), viewport_scroll_offset: 0, hovered_link: None, preedit: String::new() }, rx))
+        Ok((Self { backend, pty: Some(pty), palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new() }, rx))
     }
 
     pub fn new_no_pty(
@@ -124,7 +120,7 @@ impl TerminalState {
     ) -> TerminalResult<Self> {
         let backend = TerminalBackend::new(cols, rows);
         let palette = TerminalPalette::default();
-        Ok(Self { backend, pty: None, palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), viewport_scroll_offset: 0, hovered_link: None, preedit: String::new() })
+        Ok(Self { backend, pty: None, palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new() })
     }
 
     /// A PTY-less state with an explicit scrollback budget, for the
@@ -138,7 +134,7 @@ impl TerminalState {
     ) -> TerminalResult<Self> {
         let backend = TerminalBackend::new_with_scrollback(cols, rows, scrollback);
         let palette = TerminalPalette::default();
-        Ok(Self { backend, pty: None, palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), viewport_scroll_offset: 0, hovered_link: None, preedit: String::new() })
+        Ok(Self { backend, pty: None, palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new() })
     }
 
     /// Wire a remote resize sender, called from the app once an SSH
@@ -564,17 +560,16 @@ impl TerminalState {
     /// rows outside it from scrollback. This is intentionally distinct from
     /// [`Self::all_text`], which includes the whole buffer.
     ///
-    /// The offset is re-clamped here with the draw's own bound rather than
-    /// trusted as stored: a resize or a `clear_scrollback` between frames
-    /// shrinks the history the value was measured against, and a range past
-    /// the top of the grid would silently read as a shorter screen.
+    /// The offset is the grid's own `display_offset` (see
+    /// [`Self::viewport_offset`]), which a resize or a `clear_scrollback`
+    /// between frames has already moved with the rows, so the range is
+    /// never measured against a history the grid no longer holds.
     pub fn visible_text(&self) -> String {
         use alacritty_terminal::grid::Dimensions;
         let grid = self.backend.term.grid();
         let last_col = grid.columns().saturating_sub(1) as u16;
         let last_visible_line = grid.screen_lines().saturating_sub(1) as i32;
-        let max_scroll = grid.total_lines().saturating_sub(grid.screen_lines()) as i32;
-        let offset = self.viewport_scroll_offset.clamp(0, max_scroll);
+        let offset = self.viewport_offset();
         let selection = Selection {
             start: (0, -offset),
             end: (last_col, last_visible_line - offset),
@@ -583,10 +578,51 @@ impl TerminalState {
         self.get_selection_text(&selection).trim_end().to_string()
     }
 
-    /// Store the viewport offset resolved by the widget for the frame it is
-    /// drawing, which is what [`Self::visible_text`] reads back.
-    pub(crate) fn set_viewport_scroll_offset(&mut self, offset: i32) {
-        self.viewport_scroll_offset = offset;
+    /// Lines above the live edge the viewport is showing: alacritty's own
+    /// `display_offset`, which the grid keeps current through output (it
+    /// rises as lines scroll into history, including once the scrollback
+    /// is full and the line count stops growing), a resize (a shorter or
+    /// taller window keeps the same rows in view), a clear-scrollback (0)
+    /// and the alternate screen (a grid of its own, so the primary
+    /// buffer's position survives a vim round trip). 0 at the live edge.
+    ///
+    /// Read through a clamp to the history: `Grid::scroll_up` bumps the
+    /// raw offset before it asks whether the region being scrolled starts
+    /// at the top row, so a program scrolling under a fixed header
+    /// (DECSTBM with a top margin) raises it without adding a line to
+    /// history, and a value past the top would index rows the storage
+    /// does not hold. Below the cap that excess is exactly what the clamp
+    /// removes; at the cap the bump is bounded by the history itself.
+    pub fn viewport_offset(&self) -> i32 {
+        use alacritty_terminal::grid::Dimensions;
+        let grid = self.backend.term.grid();
+        (grid.display_offset() as i32).min(grid.history_size() as i32)
+    }
+
+    /// Move the viewport by `lines` (positive = older content) and hand
+    /// back where it landed. Every scroll gesture goes through here or
+    /// [`Self::scroll_viewport_to`] rather than through a widget-side
+    /// counter, so the grid's bookkeeping above covers all of them.
+    pub(crate) fn scroll_viewport_by(&mut self, lines: i32) -> i32 {
+        let target = self.viewport_offset().saturating_add(lines);
+        self.scroll_viewport_to(target)
+    }
+
+    /// Scroll to an absolute offset, resolved against the grid as it is
+    /// now: a target past the top lands on the oldest screen the grid
+    /// holds (`i32::MAX` is how the transcript viewer asks for the top),
+    /// 0 is the live edge, and the alternate grid, with no history, stays
+    /// at 0. The delta is measured from the RAW offset, so an excess the
+    /// region bump left past the top (see [`Self::viewport_offset`]) is
+    /// normalized by the first gesture instead of absorbing it.
+    pub(crate) fn scroll_viewport_to(&mut self, target: i32) -> i32 {
+        use alacritty_terminal::grid::Dimensions;
+        let grid = self.backend.term.grid();
+        let history = grid.history_size() as i32;
+        let raw = grid.display_offset() as i32;
+        let delta = target.clamp(0, history) - raw;
+        self.backend.term.scroll_display(alacritty_terminal::grid::Scroll::Delta(delta));
+        self.viewport_offset()
     }
 
     /// Drop the scrollback history, keeping the visible screen (the PuTTY
@@ -1200,23 +1236,23 @@ mod tests {
 
         // A scrolled viewport follows the exact three rows that the widget
         // would draw rather than silently snapping back to the live edge.
-        state.set_viewport_scroll_offset(2);
+        state.scroll_viewport_by(2);
         assert_eq!(state.visible_text(), "one\ntwo\nthree");
     }
 
     #[test]
-    fn visible_text_clamps_an_offset_the_grid_no_longer_holds() {
+    fn visible_text_follows_the_grid_past_its_top_and_after_a_clear() {
         let mut state =
             TerminalState::new_no_pty_with_scrollback(24, 3, 100).expect("headless state");
         state.process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
 
-        // An offset past the top of the buffer reads as the oldest screen the
-        // grid can show, never as a range half outside it.
-        state.set_viewport_scroll_offset(9);
+        // A scroll past the top of the buffer stops at the oldest screen the
+        // grid can show, never a range half outside it.
+        state.scroll_viewport_by(9);
         assert_eq!(state.visible_text(), "one\ntwo\nthree");
 
-        // Dropping the history is the case that arrives without a frame in
-        // between: the stored offset outlives the lines it pointed at.
+        // Dropping the history lands on the live edge: there is nothing
+        // above it left to show.
         state.clear_scrollback();
         assert_eq!(state.visible_text(), "three\nfour\nfive");
     }

@@ -763,20 +763,27 @@ where
             if lines == 0 {
                 return Some(CanvasAction::capture());
             }
-            // One lock for both the alt-screen test and the scroll
-            // clamp, this handler fires for every wheel tick and
-            // locking twice doubled the contention with `process()`.
-            let (in_alt_screen, max_scroll) = match self.state.lock() {
-                Ok(s) => {
-                    let in_alt = s
-                        .backend
-                        .term
-                        .mode()
-                        .contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
-                    let grid = s.backend.term.grid();
-                    (in_alt, grid.total_lines().saturating_sub(grid.screen_lines()) as i32)
+            // One lock for the alt-screen test and the scroll itself,
+            // this handler fires for every wheel tick and locking twice
+            // doubled the contention with `process()`.
+            let in_alt_screen = {
+                let mut s = match self.state.lock() {
+                    Ok(s) => s,
+                    Err(p) => p.into_inner(),
+                };
+                let in_alt = s
+                    .backend
+                    .term
+                    .mode()
+                    .contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+                if !in_alt {
+                    // Positive = older content. The grid clamps to its
+                    // history; the mirror serves the hit-tests that run
+                    // before the next frame.
+                    let offset = s.scroll_viewport_by(lines);
+                    widget_state.scroll_offset.set(offset);
                 }
-                Err(_) => (false, i32::MAX),
+                in_alt
             };
             if in_alt_screen {
                 // Translate wheel into arrow-key bytes for the remote
@@ -793,8 +800,6 @@ where
                 }
                 return Some(self.emit_input(bytes));
             }
-            widget_state.scroll_offset
-                .set((widget_state.scroll_offset.get() + lines).max(0).min(max_scroll));
             Some(CanvasAction::request_redraw().and_capture())
     }
 
@@ -1069,7 +1074,7 @@ where
     ) -> Option<CanvasAction<Message>> {
             if let Some((start_y, start_offset)) = widget_state.scrollbar_drag
                 && let Some(pos) = cursor.position_in(bounds)
-                && let Ok(state) = self.state.lock()
+                && let Ok(mut state) = self.state.lock()
             {
                 let grid = state.backend.term.grid();
                 if let Some(sb) = scrollbar_geom(
@@ -1082,9 +1087,12 @@ where
                     let track_range = (sb.track_h - sb.thumb_h).max(1.0);
                     let dprogress = dy / track_range;
                     let doffset = (dprogress * sb.history_size as f32) as i32;
-                    // Thumb moves down → progress decreases → offset decreases.
-                    widget_state.scroll_offset
-                        .set((start_offset - doffset).clamp(0, sb.history_size));
+                    // Thumb moves down → progress decreases → offset
+                    // decreases. An absolute target: the thumb follows the
+                    // hand even while output keeps raising the grid's own
+                    // offset underneath.
+                    let offset = state.scroll_viewport_to(start_offset - doffset);
+                    widget_state.scroll_offset.set(offset);
                     return Some(CanvasAction::request_redraw().and_capture());
                 }
             }
@@ -1120,14 +1128,8 @@ where
                         .unwrap_or(true);
                     if (rel.y < top_edge || rel.y > bot_edge)
                         && due
-                        && let Ok(state) = self.state.lock()
+                        && let Ok(mut state) = self.state.lock()
                     {
-                        use alacritty_terminal::grid::Dimensions;
-                        let grid = state.backend.term.grid();
-                        let history = (grid
-                            .total_lines()
-                            .saturating_sub(grid.screen_lines()))
-                            as i32;
                         let past = if rel.y < top_edge {
                             top_edge - rel.y
                         } else {
@@ -1138,13 +1140,11 @@ where
                         let step =
                             ((past / self.cell_height).floor() as i32 + 1).clamp(1, 4);
                         widget_state.last_autoscroll = Some(now);
-                        if rel.y < top_edge {
-                            widget_state.scroll_offset
-                                .set((widget_state.scroll_offset.get() + step).min(history));
-                        } else {
-                            widget_state.scroll_offset
-                                .set((widget_state.scroll_offset.get() - step).max(0));
-                        }
+                        // Above the top edge reveals older rows, below the
+                        // bottom edge newer ones; the grid clamps both ends.
+                        let step = if rel.y < top_edge { step } else { -step };
+                        let offset = state.scroll_viewport_by(step);
+                        widget_state.scroll_offset.set(offset);
                     }
                     // Clamp back into the widget for cell mapping (the
                     // pointer may be outside the bounds now).
@@ -1204,14 +1204,18 @@ where
                         .as_ref()
                         .map(|(u, _)| (u.clone(), pos))
                 } else if let Ok(mut state) = self.state.lock() {
-                    let line = Self::visible_row_to_line(vrow, widget_state.scroll_offset.get());
+                    // The lock is in hand, so read the grid's offset rather
+                    // than the mirror: output since the last frame moved the
+                    // rows under a held viewport without moving them on
+                    // screen.
+                    let offset = state.viewport_offset();
+                    let line = Self::visible_row_to_line(vrow, offset);
                     // OSC 8 discriminator (same rule as the open + hint
                     // paths): a cell with an explicit link never falls back
                     // to a scraped URL. A disallowed scheme suppresses the
                     // pointer + underline but still records the blocked
                     // target so the app can show a "not allowed" chip; an
                     // allowed one drives the underline + the reveal chip.
-                    let offset = widget_state.scroll_offset.get();
                     // Segments are grid lines; the underline is drawn in
                     // on-screen rows.
                     let on_screen = |segments: Vec<LinkSegment>| -> Vec<(u16, u16, u16)> {
@@ -1303,7 +1307,7 @@ where
                 // Scrollbar: thumb drag start, or page-up/down on the
                 // empty track area. Only meaningful when there's
                 // actual scrollback.
-                if let Ok(state) = self.state.lock() {
+                if let Ok(mut state) = self.state.lock() {
                     let grid = state.backend.term.grid();
                     if let Some(sb) = scrollbar_geom(
                         bounds,
@@ -1317,14 +1321,16 @@ where
                     {
                         let page = grid.screen_lines() as i32;
                         if pos.y >= sb.thumb_y && pos.y <= sb.thumb_y + sb.thumb_h {
+                            // The drag measures from the grid's offset, the
+                            // space its targets are resolved in.
                             widget_state.scrollbar_drag =
-                                Some((pos.y, widget_state.scroll_offset.get()));
-                        } else if pos.y < sb.thumb_y {
-                            widget_state.scroll_offset
-                                .set((widget_state.scroll_offset.get() + page).min(sb.history_size));
+                                Some((pos.y, state.viewport_offset()));
                         } else {
-                            widget_state.scroll_offset
-                                .set((widget_state.scroll_offset.get() - page).max(0));
+                            // Above the thumb pages up (older), below it
+                            // pages down; the grid clamps both ends.
+                            let step = if pos.y < sb.thumb_y { page } else { -page };
+                            let offset = state.scroll_viewport_by(step);
+                            widget_state.scroll_offset.set(offset);
                         }
                         return Some(CanvasAction::request_redraw().and_capture());
                     }
@@ -1568,30 +1574,24 @@ where
                 Some(CanvasAction::request_redraw().and_capture())
             }
             TerminalChordAction::ScrollPageUp | TerminalChordAction::ScrollPageDown => {
-                // One lock for the alt-screen test and the clamp,
-                // like the wheel handler above.
-                let (in_alt_screen, max_scroll, page) = match self.state.lock() {
-                    Ok(s) => {
-                        use alacritty_terminal::grid::Dimensions;
-                        let in_alt = s
-                            .backend
-                            .term
-                            .mode()
-                            .contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
-                        let grid = s.backend.term.grid();
-                        let screen = grid.screen_lines();
-                        (
-                            in_alt,
-                            grid.total_lines().saturating_sub(screen) as i32,
-                            // A page is a screen minus one row of
-                            // overlap, the convention every terminal
-                            // uses so a line stays visible across the
-                            // jump. Never zero, or a short pane would
-                            // stop paging.
-                            (screen.saturating_sub(1)).max(1) as i32,
-                        )
-                    }
-                    Err(_) => (false, i32::MAX, 1),
+                // One lock for the alt-screen test, the page size and
+                // the scroll itself, like the wheel handler above.
+                let mut s = match self.state.lock() {
+                    Ok(s) => s,
+                    Err(p) => p.into_inner(),
+                };
+                let in_alt_screen = s
+                    .backend
+                    .term
+                    .mode()
+                    .contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+                // A page is a screen minus one row of overlap, the
+                // convention every terminal uses so a line stays visible
+                // across the jump. Never zero, or a short pane would stop
+                // paging.
+                let page = {
+                    use alacritty_terminal::grid::Dimensions;
+                    (s.backend.term.grid().screen_lines().saturating_sub(1)).max(1) as i32
                 };
                 // No scrollback on the alternate screen: vim / less /
                 // htop page themselves, so the key belongs to them.
@@ -1608,11 +1608,8 @@ where
                 } else {
                     -page
                 };
-                widget_state.scroll_offset.set(
-                    (widget_state.scroll_offset.get() + lines)
-                        .max(0)
-                        .min(max_scroll),
-                );
+                let offset = s.scroll_viewport_by(lines);
+                widget_state.scroll_offset.set(offset);
                 Some(CanvasAction::request_redraw().and_capture())
             }
         }
