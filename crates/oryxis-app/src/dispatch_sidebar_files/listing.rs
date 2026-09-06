@@ -111,11 +111,11 @@ impl Oryxis {
 }
 
 /// A listing replaced the rows: the double-click stamp is stale by
-/// definition, and the selection survives only while every selected
-/// entry is still present (a same-directory refresh, an op_then_list
-/// completion); a listing of any other directory drops it. The
-/// shift-click anchor follows the same rule, so a later shift-click
-/// never extends from a row that is no longer there.
+/// definition, and the selection keeps the entries still present (a
+/// same-directory refresh, an op_then_list completion, a delete that
+/// took some rows and not others); a listing of any other directory
+/// drops it whole. The shift-click anchor follows the same rule, so a
+/// later shift-click never extends from a row that is no longer there.
 fn prune_selection(files: &mut crate::state::PaneFiles, path: &str) {
     files.last_click = None;
     if files.selected.is_empty() {

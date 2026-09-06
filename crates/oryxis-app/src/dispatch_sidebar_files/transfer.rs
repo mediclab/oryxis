@@ -142,8 +142,20 @@ impl Oryxis {
                 Task::perform(
                     async move {
                         let mut queue = std::collections::VecDeque::new();
+                        let mut skipped: Vec<String> = Vec::new();
                         for (remote_path, is_dir) in &targets {
-                            let target = dir_path.join(files_basename(remote_path));
+                            let name = files_basename(remote_path);
+                            // The top-level name is the server's too, and
+                            // it is the ROOT every checked child below is
+                            // joined under: `walk_remote_for_download`
+                            // guards each child, which is moot once a
+                            // selected folder named `C:x` has re-rooted
+                            // the destination (the pane's batch rule).
+                            if !crate::sftp_helpers::is_safe_remote_entry_name(&name) {
+                                skipped.push(name);
+                                continue;
+                            }
+                            let target = dir_path.join(&name);
                             if *is_dir {
                                 queue.push_back(crate::state::TransferItem {
                                     src: remote_path.clone(),
@@ -167,9 +179,27 @@ impl Oryxis {
                                 });
                             }
                         }
+                        if !skipped.is_empty() {
+                            // Refused names abort the batch rather than
+                            // thinning it: a download where nothing
+                            // happens owes the reason, and one where a
+                            // file is silently missing owes more.
+                            return Err(format!(
+                                "{} ({})",
+                                crate::i18n::t("sftp_unsafe_entry_name"),
+                                skipped.join(", ")
+                            ));
+                        }
                         if queue.is_empty() {
                             return Ok(None);
                         }
+                        // Refuse up front what would die mid-queue: a
+                        // selected folder can be gigabytes, and the
+                        // single-file path never had the question.
+                        crate::sftp_helpers::ensure_local_space(
+                            &dir_path,
+                            queue.iter().filter_map(|i| i.size).sum::<u64>(),
+                        )?;
                         let clients = crate::sftp_helpers::build_client_pool(client, concurrency)
                             .await
                             .map_err(|e| e.to_string())?;

@@ -119,8 +119,6 @@ pub(crate) fn ensure_local_space(dir: &std::path::Path, need: u64) -> Result<(),
     ))
 }
 
-/// Join a basename onto a POSIX directory path, handling the root case
-/// (which would otherwise produce `//foo`).
 /// Title + detail for a "Delete" confirmation, from the targets it
 /// acts on. A single target shows its name and, for a directory, the
 /// recursive hint; a bulk delete shows the count and the folder-vs-file
@@ -147,15 +145,16 @@ pub(crate) fn delete_confirm_copy(targets: &[(&str, bool)]) -> (String, String) 
     }
     let folders = targets.iter().filter(|(_, d)| *d).count();
     let files = targets.len() - folders;
+    // A lone kind is always two or more here (one target took the arm
+    // above), so its count can agree with the plural. The mixed case
+    // can hold a 1 on either side, and is written so nothing has to
+    // agree with it.
     let detail = match (folders, files) {
         (0, n) => format!("{} {}", n, t("files_lower")),
         (n, 0) => format!("{} {}", n, t("folders_recursive_lower")),
         (f, fi) => format!(
-            "{} {} {} {} {}",
-            f,
+            "{}: {f}, {}: {fi}",
             t("folders_recursive_lower"),
-            t("and"),
-            fi,
             t("files_lower"),
         ),
     };
@@ -165,6 +164,8 @@ pub(crate) fn delete_confirm_copy(targets: &[(&str, bool)]) -> (String, String) 
     )
 }
 
+/// Join a basename onto a POSIX directory path, handling the root case
+/// (which would otherwise produce `//foo`).
 pub(crate) fn remote_join(dir: &str, basename: &str) -> String {
     if dir == "/" {
         format!("/{}", basename)

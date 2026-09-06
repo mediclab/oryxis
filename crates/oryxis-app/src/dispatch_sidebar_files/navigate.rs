@@ -161,6 +161,18 @@ impl Oryxis {
             SidebarFilesMessage::SidebarFilesToggleHidden => {
                 if let Some(pane) = self.active_pane_mut() {
                     pane.files.show_hidden = !pane.files.show_hidden;
+                    // A row that just left the list leaves the selection
+                    // with it: otherwise Ctrl+A with dotfiles shown, then
+                    // the toggle, then "Delete N items" would count rows
+                    // nobody can see, and delete `.ssh` on a confirm that
+                    // only showed a number.
+                    if !pane.files.show_hidden {
+                        let hidden = |p: &String| files_basename(p).starts_with('.');
+                        pane.files.selected.retain(|p| !hidden(p));
+                        if pane.files.selection_anchor.as_ref().is_some_and(hidden) {
+                            pane.files.selection_anchor = None;
+                        }
+                    }
                 }
             }
             SidebarFilesMessage::SidebarFilesRefresh => {

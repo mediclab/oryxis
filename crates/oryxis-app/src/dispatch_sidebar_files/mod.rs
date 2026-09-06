@@ -168,15 +168,21 @@ pub(crate) fn visible_entry_paths(files: &crate::state::PaneFiles) -> Vec<String
 
 /// `(full path, is_dir)` for every selected row still present in the
 /// listing, in listing order. Feeds the bulk delete confirm, the
-/// selection drag-out and the ring-less Del; a selection only ever
-/// contains visible rows (they are the only clickable ones), so no
-/// hidden filter is needed here.
+/// selection drag-out and the ring-less Del. The selection is kept to
+/// visible rows at its edges (a click selects a drawn row, and hiding
+/// dotfiles drops them from it), so no hidden filter is applied here.
+///
+/// Read once per frame while the row menu is open, so the lookup is a
+/// set: a selection of thousands against a listing of thousands must
+/// not become a product of the two.
 pub(crate) fn selected_items(files: &crate::state::PaneFiles) -> Vec<(String, bool)> {
+    let selected: std::collections::HashSet<&str> =
+        files.selected.iter().map(String::as_str).collect();
     files
         .entries
         .iter()
-        .filter(|e| files.selected.iter().any(|s| files_join(&files.path, &e.name) == *s))
         .map(|e| (files_join(&files.path, &e.name), e.is_dir))
+        .filter(|(path, _)| selected.contains(path.as_str()))
         .collect()
 }
 

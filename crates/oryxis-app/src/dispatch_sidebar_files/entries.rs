@@ -134,8 +134,8 @@ impl Oryxis {
             SidebarFilesMessage::SidebarFilesDelete(path, is_dir) => {
                 self.overlay = None;
                 let name = files_basename(&path);
-                // Shared destructive-confirm dialog (Enter confirms via
-                // the modal keynav router).
+                // Shared destructive-confirm dialog (Cancel is the
+                // keyboard default: a stray Enter deletes nothing).
                 self.confirm_remove(
                     name,
                     Message::SidebarFiles(SidebarFilesMessage::SidebarFilesDeleteConfirmed(path, is_dir)),

@@ -174,10 +174,12 @@ impl Oryxis {
     /// CURSOR being over the sidebar, and the ring goes quiet on an
     /// input row, so without it a Delete meant to erase a character
     /// forward inside the rename field would raise the destructive
-    /// confirm on the rows the mouse selected earlier, with the
-    /// removal as its default button: the next Enter, the one that
-    /// was going to commit the rename, would delete the files
-    /// instead. The refusal lives HERE rather than in the Delete arm
+    /// confirm on the rows the mouse selected earlier, in the middle
+    /// of an edit the user was still typing (the confirm's default
+    /// button is Cancel since #204, so the Enter that was going to
+    /// commit the rename would dismiss the dialog rather than delete;
+    /// the surprise is the dialog itself). The refusal lives HERE
+    /// rather than in the Delete arm
     /// so a later ring-less caller (the Menu key is the obvious one)
     /// inherits it.
     fn sidebar_files_selected_entries(
@@ -343,6 +345,7 @@ impl Oryxis {
         if tab == TerminalSidebarTab::Files
             && (modifiers.control() || modifiers.command())
             && !modifiers.alt()
+            && !modifiers.shift()
             && matches!(key, keyboard::Key::Character(c) if c.as_str().eq_ignore_ascii_case("a"))
         {
             let idx = self.active_tab?;
@@ -581,6 +584,23 @@ impl Oryxis {
                 if let Some(idx) = ring {
                     let row = self.sidebar_items_for(tab).borrow().get(idx).cloned()?;
                     let msg = row.delete?;
+                    // A ringed Files row that sits INSIDE a multi-selection
+                    // deletes the selection, not the one row: Ctrl+A leaves
+                    // the ring where it was, and the highlighted set is
+                    // what the Menu key on the same row offers to delete.
+                    // A target the eye reads as N must not act on 1.
+                    if let Message::SidebarFiles(SidebarFilesMessage::SidebarFilesDelete(
+                        path,
+                        _,
+                    )) = &msg
+                        && let Some(selected) = self.sidebar_files_selected_entries(tab)
+                        && selected.len() > 1
+                        && selected.iter().any(|(p, _)| p == path)
+                    {
+                        return Some(self.update(Message::SidebarFiles(
+                            SidebarFilesMessage::SidebarFilesDeleteSelection(selected),
+                        )));
+                    }
                     // The recording shrinks next frame; the selection is
                     // clamped on the next key, so the ring lands on the
                     // neighbor instead of vanishing.
@@ -591,9 +611,8 @@ impl Oryxis {
                 // on what the mouse selected: the whole multi-selection,
                 // the select-then-Del pair the SFTP pane offers.
                 let selected = self.sidebar_files_selected_entries(tab)?;
-                let msg = if selected.len() == 1 {
-                    let (path, is_dir) = selected.into_iter().next().expect("len checked");
-                    SidebarFilesMessage::SidebarFilesDelete(path, is_dir)
+                let msg = if let [(path, is_dir)] = selected.as_slice() {
+                    SidebarFilesMessage::SidebarFilesDelete(path.clone(), *is_dir)
                 } else {
                     SidebarFilesMessage::SidebarFilesDeleteSelection(selected)
                 };
