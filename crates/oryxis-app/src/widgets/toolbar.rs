@@ -290,6 +290,20 @@ pub(crate) fn context_menu_item_chord<'a>(
     color: Color,
     chord: Option<String>,
 ) -> Element<'a, Message> {
+    context_menu_row(icon, label, msg, color, chord)
+}
+
+/// The one body behind [`context_menu_item_chord`] and
+/// [`context_menu_item_owned`], generic over the label's ownership so the
+/// borrowed and the owned row cannot drift in padding, style or chord
+/// placement.
+fn context_menu_row<'a>(
+    icon: impl Into<crate::os_icon::BrandIcon>,
+    label: impl iced::widget::text::IntoFragment<'a>,
+    msg: Message,
+    color: Color,
+    chord: Option<String>,
+) -> Element<'a, Message> {
     let mut row = vec![
         icon.into().view(14.0, color),
         Space::new().width(8).into(),
@@ -314,6 +328,8 @@ pub(crate) fn context_menu_item_chord<'a>(
     .style(|_, status| {
         let bg = match status {
             BtnStatus::Hovered => OryxisColors::t().bg_hover,
+            // The press reads as a press, not as the hover it began as.
+            BtnStatus::Pressed => Color::from_rgba(1.0, 1.0, 1.0, 0.12),
             _ => Color::TRANSPARENT,
         };
         button::Style {
@@ -334,33 +350,7 @@ pub(crate) fn context_menu_item_owned(
     msg: Message,
     color: Color,
 ) -> Element<'static, Message> {
-    button(
-        container(
-            dir_row(vec![
-                icon.into().view(14.0, color),
-                Space::new().width(8).into(),
-                text(label).size(12).color(OryxisColors::t().text_primary).into(),
-            ])
-            .align_y(iced::Alignment::Center),
-        )
-        .width(Length::Fill)
-        .align_x(dir_align_x()),
-    )
-    .on_press(msg)
-    .width(Length::Fill)
-    .padding(Padding { top: 6.0, right: 12.0, bottom: 6.0, left: 12.0 })
-    .style(|_, status| {
-        let bg = match status {
-            BtnStatus::Hovered => OryxisColors::t().bg_hover,
-            _ => Color::TRANSPARENT,
-        };
-        button::Style {
-            background: Some(Background::Color(bg)),
-            border: Border { radius: Radius::from(4.0), ..Default::default() },
-            ..Default::default()
-        }
-    })
-    .into()
+    context_menu_row(icon, label, msg, color, None)
 }
 
 /// Tag-filter trigger for the host dashboard toolbar, styled like the

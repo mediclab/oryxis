@@ -59,7 +59,11 @@ pub enum HistoryMessage {
     /// Ask for confirmation before deleting one recording; the
     /// dialog's action carries `DeleteSessionLog`.
     RequestDeleteSessionLog(usize),
-    DeleteSessionLog(usize),
+    /// Carries the recording's id, not its row: the list is reloaded on
+    /// every `SshDisconnected` (a reconnecting tab lands a new row above
+    /// the page while the dialog is up), and a row index resolved at
+    /// confirm time would delete the neighbour.
+    DeleteSessionLog(uuid::Uuid),
     /// Hover tracking for clickable session rows in the Logs view.
     LogRowHovered(Uuid),
     LogRowUnhovered(uuid::Uuid),

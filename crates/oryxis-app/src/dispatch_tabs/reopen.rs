@@ -216,10 +216,10 @@ impl Oryxis {
 /// which is what a reopen has to do anyway, and it is the method that
 /// deliberately stores nothing.
 ///
-/// Only when the password was typed into this entry. A `Password` host
-/// pointing at a saved identity hydrates from the vault on the way back,
-/// and turning it into a prompt would ask the user for something the app
-/// already has.
+/// Only when a password was typed into this entry (`entry.password`). A
+/// `Password` host whose entry carries none is hydrating its credential
+/// from the vault on the way back, and turning it into a prompt would ask
+/// the user for something the app already has.
 fn quick_snapshot(
     entry: &crate::state::QuickConnectEntry,
 ) -> oryxis_core::models::Connection {

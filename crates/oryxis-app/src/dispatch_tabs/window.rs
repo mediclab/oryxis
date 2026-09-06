@@ -357,15 +357,14 @@ impl Oryxis {
                 }
             }
             // A notification toast raised while the window was unfocused
-            // is left up (no auto-dismiss timer) so it isn't gone before
-            // you look; clear it a few seconds after you return.
+            // was left up (`ToastClear` declines while the window is
+            // away) so it isn't gone before you look; give it a few
+            // seconds from the moment you return. Re-stamping the
+            // deadline is enough: the tick that clears it is already
+            // running, and only honours the deadline once focus is back.
             if self.toast.is_some() {
-                return iced::Task::perform(
-                    async {
-                        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-                    },
-                    |_| Message::ToastClear,
-                );
+                self.toast_deadline = std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_secs(4));
             }
         } else {
             // Crash-safe geometry checkpoint: the exit paths all
@@ -468,10 +467,10 @@ impl Oryxis {
     /// Every close verb lands here: the chrome's X, the side-dock
     /// header's X, Alt+F4 and the taskbar's Close (the `CloseRequested`
     /// subscription), because the window builder takes ownership of the
-    /// OS close event. Not guarded: the tray's Quit (the one deliberate
-    /// escape hatch once a window is hidden), and close-to-tray, which
-    /// keeps the sessions alive behind the hidden window, so there is
-    /// nothing to lose.
+    /// OS close event. The tray's Quit asks the same question on its own
+    /// path (`dispatch_tray`). Not guarded: close-to-tray, which keeps
+    /// the sessions alive behind the hidden window, so there is nothing
+    /// to lose.
     ///
     /// The confirmation fires `ConfirmCloseWindow`, a message of its
     /// own rather than a re-fired `WindowClose`: nothing else can
@@ -479,7 +478,10 @@ impl Oryxis {
     /// confirmation for a fresh close request, nor a later real request
     /// for a confirmation that already happened.
     pub(super) fn handle_window_close(&mut self) -> Task<Message> {
-        if self.prefs.confirm_close_session_tab && !self.tabs.is_empty() && !self.hides_to_tray() {
+        if self.prefs.confirm_close_session_tab
+            && !(self.tabs.is_empty() && self.sftp_tabs.is_empty())
+            && !self.hides_to_tray()
+        {
             let live = self.live_session_tab_count();
             if live > 0 {
                 self.overlay = None;

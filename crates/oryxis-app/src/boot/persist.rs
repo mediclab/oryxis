@@ -275,6 +275,14 @@ impl Oryxis {
         if !self.prefs.restore_tabs_on_launch {
             return;
         }
+        // A window the running app spawned (`--inherit-vault`: Ctrl+Shift+N,
+        // "Duplicate in new window") is not a launch. The row it would read
+        // is the PARENT's live strip, rewritten on every change over there,
+        // so the child would open on dormant copies of every tab the user
+        // is looking at in the other window.
+        if crate::app::AUTO_PASSWORD.get().is_some() {
+            return;
+        }
         let json = self
             .vault
             .as_ref()
@@ -282,26 +290,12 @@ impl Oryxis {
         let Some(json) = json else { return };
         let specs: Vec<crate::state::PinnedTabSpec> =
             serde_json::from_str(&json).unwrap_or_default();
-        // Whatever a pin already restored stays that pin's: a host that
-        // was both pinned and open in a second tab is legitimate, but a
-        // pin restored from `pinned_tabs` and an entry here naming the
-        // same tab would be one chip too many. The pins are in the strip
-        // by now (`restore_pinned_tabs_dormant` runs first).
-        let mut pinned_keys: std::collections::HashSet<String> = self
-            .tabs
-            .iter()
-            .filter(|t| t.pinned)
-            .filter_map(|t| t.pin_spec().map(|s| s.dedupe_key()))
-            .collect();
-        pinned_keys.extend(
-            (0..self.sftp_tabs.len())
-                .filter(|&i| self.sftp_tabs[i].pinned)
-                .filter_map(|i| self.sftp_pin_spec(i).map(|s| s.dedupe_key())),
-        );
+        // No deduplication against the pins, on purpose. The writer
+        // (`persist_open_tabs`) skips pinned tabs, so an entry here that
+        // names the same host as a pin can only be a SECOND, unpinned tab
+        // on it, which is legitimate and was open. Dropping it brought
+        // back one chip fewer than the strip had, every time.
         for spec in specs {
-            if pinned_keys.contains(&spec.dedupe_key()) {
-                continue;
-            }
             let label = spec.label().to_string();
             if matches!(spec, crate::state::PinnedTabSpec::Sftp { .. }) {
                 let tab = crate::state::SftpTab::new_dormant(label, spec);

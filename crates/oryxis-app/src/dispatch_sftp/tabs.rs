@@ -53,6 +53,29 @@ impl Oryxis {
             }
             SftpMessage::CloseSftpTab(idx) => {
                 self.overlay = None;
+                // The same opt-in guard a terminal tab's X has (issue
+                // #204): a mounted SSH session is a live session, and the
+                // setting says "a tab or the app", not "a terminal tab".
+                if self.prefs.confirm_close_session_tab
+                    && self.sftp_tab_is_live(idx)
+                    && let Some(tab) = self.sftp_tabs.get(idx)
+                {
+                    let id = tab.id;
+                    let label = tab.custom_name.clone().unwrap_or_else(|| tab.label.clone());
+                    self.error_dialog = Some(crate::state::ErrorDialog {
+                        title: crate::i18n::t("close_session_title").to_string(),
+                        body: crate::i18n::t("close_session_body").replacen("{name}", &label, 1),
+                        link: None,
+                        action: Some(crate::state::ErrorDialogAction {
+                            label: crate::i18n::t("close_session_confirm").to_string(),
+                            message: Box::new(Message::Sftp(
+                                SftpMessage::CloseSftpTabLiveConfirmed(id),
+                            )),
+                            danger: true,
+                        }),
+                    });
+                    return Ok(Task::none());
+                }
                 // Guard: an in-flight transfer or unsaved edit-session opens a
                 // confirmation modal instead of closing outright.
                 if self.sftp_tab_has_unsaved(idx) {
@@ -62,6 +85,19 @@ impl Oryxis {
                     // the "Open terminal" morph closes the SFTP tab as its
                     // last step, and that tab did not die, it became the
                     // terminal tab beside it (issue #186).
+                    self.remember_closed_sftp_tab(idx);
+                    return Ok(self.close_sftp_tab(idx));
+                }
+            }
+            SftpMessage::CloseSftpTabLiveConfirmed(id) => {
+                let Some(idx) = self.sftp_tabs.iter().position(|t| t.id == id) else {
+                    return Ok(Task::none());
+                };
+                // The unsaved-work guard still applies after the live-session
+                // one: two questions, each asked once.
+                if self.sftp_tab_has_unsaved(idx) {
+                    self.pending_sftp_close = Some(crate::state::PendingSftpClose::One(idx));
+                } else {
                     self.remember_closed_sftp_tab(idx);
                     return Ok(self.close_sftp_tab(idx));
                 }

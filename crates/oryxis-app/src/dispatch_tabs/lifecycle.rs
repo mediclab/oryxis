@@ -264,9 +264,13 @@ impl Oryxis {
     /// behind the window-X and tray-Quit guards, which act on every
     /// tab at once.
     pub(crate) fn live_session_tab_count(&self) -> usize {
-        (0..self.tabs.len())
+        let terminals = (0..self.tabs.len())
             .filter(|&i| self.tab_has_live_session(i))
-            .count()
+            .count();
+        let sftp = (0..self.sftp_tabs.len())
+            .filter(|&i| self.sftp_tab_is_live(i))
+            .count();
+        terminals + sftp
     }
 
     /// The batch-close gate shared by "Close other tabs" and "Close all
@@ -967,6 +971,11 @@ impl Oryxis {
         self.adjust_last_terminal_tab_after_remove(idx);
 
         let before = self.tabs.len();
+        if open.is_none() {
+            // The host this chip named was deleted since it was saved;
+            // said out loud, or the chip simply vanishes on the click.
+            self.set_toast(crate::i18n::t("chain_hop_missing").to_string());
+        }
         let task = open.map(|m| self.update(m)).unwrap_or_else(Task::none);
         if self.tabs.len() > before {
             // A live tab was appended at the end; move it back to the

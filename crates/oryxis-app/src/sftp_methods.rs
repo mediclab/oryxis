@@ -1003,6 +1003,18 @@ impl Oryxis {
         })
     }
 
+    /// Whether the SFTP tab at `idx` holds a live remote session: a pane
+    /// mounted on an SSH connection that is still up. The question behind
+    /// the "close a tab or the app with a live session" guard, which
+    /// counts these tabs alongside the terminal ones.
+    pub(crate) fn sftp_tab_is_live(&self, idx: usize) -> bool {
+        self.sftp_tab_state(idx).is_some_and(|st| {
+            [&st.left, &st.right]
+                .iter()
+                .any(|p| p.session.as_ref().is_some_and(|s| s.is_alive()))
+        })
+    }
+
     /// Whether the SFTP tab at `idx` has unsaved work worth a close-guard:
     /// an in-flight transfer or a dirty edit-session. Reads the live buffer
     /// for the active tab, the parked slot otherwise.

@@ -364,11 +364,10 @@ impl Oryxis {
             HistoryMessage::RequestDeleteSessionLog(idx) => {
                 // Reached from the row kebab; drop it before the dialog.
                 self.overlay = None;
-                let label = self
-                    .session_logs
-                    .get(idx)
-                    .map(|e| e.label.clone())
-                    .unwrap_or_default();
+                let Some(entry) = self.session_logs.get(idx) else {
+                    return Task::none();
+                };
+                let (id, label) = (entry.id, entry.label.clone());
                 self.error_dialog = Some(crate::state::ErrorDialog {
                     title: crate::i18n::t("log_delete_confirm_title").to_string(),
                     body: format!(
@@ -378,7 +377,7 @@ impl Oryxis {
                     link: None,
                     action: Some(crate::state::ErrorDialogAction {
                         label: crate::i18n::t("delete").to_string(),
-                        message: Box::new(Message::History(HistoryMessage::DeleteSessionLog(idx))),
+                        message: Box::new(Message::History(HistoryMessage::DeleteSessionLog(id))),
                         danger: true,
                     }),
                 });
@@ -492,9 +491,8 @@ impl Oryxis {
             HistoryMessage::LogRowUnhovered(id) => {
                 self.hover.leave_log_row(id);
             }
-            HistoryMessage::DeleteSessionLog(idx) => {
-                if let Some(entry) = self.session_logs.get(idx) {
-                    let id = entry.id;
+            HistoryMessage::DeleteSessionLog(id) => {
+                if self.session_logs.iter().any(|e| e.id == id) {
                     if let Some(vault) = &self.vault {
                         let _ = vault.delete_session_log(&id);
                         self.session_logs_total =

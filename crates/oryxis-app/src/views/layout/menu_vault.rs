@@ -212,7 +212,23 @@ impl Oryxis {
     }
 
     pub(crate) fn build_menu_tab_actions(&self, idx: usize) -> Element<'_, Message> {
-        let mut items = column![
+        iced::widget::Column::with_children(self.tab_actions_menu_items(idx)).into()
+    }
+
+    /// How many rows the tab menu has right now, for `overlay_menu_height`.
+    /// Built and counted rather than tallied from the conditions a second
+    /// time: the menu runs from 13 rows to over 20 depending on the tab
+    /// (split, session group, quick host, closed-tab stack, right-click
+    /// scheme), and the flat guess it used to carry drew its last rows
+    /// past the bottom edge of a bottom-docked strip.
+    pub(crate) fn tab_actions_menu_rows(&self, idx: usize) -> f32 {
+        self.tab_actions_menu_items(idx).len() as f32
+    }
+
+    /// The tab menu's rows, in order. One owner for the rows and their
+    /// count (see `tab_actions_menu_rows`).
+    fn tab_actions_menu_items(&self, idx: usize) -> Vec<Element<'_, Message>> {
+        let mut items: Vec<Element<'_, Message>> = vec![
             self.menu_item(iced_fonts::lucide::pen_line(), crate::i18n::t("rename_tab"), Message::Tabs(TabsMessage::StartRenameTab(idx)), OryxisColors::t().text_secondary),
             self.menu_item(iced_fonts::lucide::columns_two(), crate::i18n::t("split_side_by_side"), Message::Terminal(TerminalMessage::SplitTabPane(idx, iced::widget::pane_grid::Axis::Vertical)), OryxisColors::t().text_secondary),
             self.menu_item(iced_fonts::lucide::rows_two(), crate::i18n::t("split_stacked"), Message::Terminal(TerminalMessage::SplitTabPane(idx, iced::widget::pane_grid::Axis::Horizontal)), OryxisColors::t().text_secondary),
@@ -232,7 +248,7 @@ impl Oryxis {
             } else {
                 (iced_fonts::lucide::maximize(), "maximize_pane")
             };
-            items = items.push(self.menu_item(
+            items.push(self.menu_item(
                 glyph,
                 crate::i18n::t(key),
                 Message::Terminal(TerminalMessage::ToggleMaximizePane(Some(idx))),
@@ -246,7 +262,7 @@ impl Oryxis {
             // keeps right-click on Paste would otherwise have no way to
             // reach it. Focused pane, like the zoom above it.
             if let Some(pane_id) = self.tabs.get(idx).map(|t| t.active().id) {
-                items = items.push(self.menu_item(
+                items.push(self.menu_item(
                     iced_fonts::lucide::external_link(),
                     crate::i18n::t("pane_to_new_tab"),
                     Message::Terminal(TerminalMessage::MovePaneToNewTab(pane_id)),
@@ -266,7 +282,7 @@ impl Oryxis {
             } else {
                 (iced_fonts::lucide::radio(), OryxisColors::t().text_secondary)
             };
-            items = items.push(self.menu_item(bc_glyph, crate::i18n::t("broadcast_input"), Message::Terminal(TerminalMessage::ToggleTabBroadcast(idx)), bc_color));
+            items.push(self.menu_item(bc_glyph, crate::i18n::t("broadcast_input"), Message::Terminal(TerminalMessage::ToggleTabBroadcast(idx)), bc_color));
         }
         // Open an SFTP tab for this host: offered when the SFTP
         // feature is on AND the tab has a live SSH session to reuse
@@ -327,7 +343,7 @@ impl Oryxis {
             } else {
                 (iced_fonts::lucide::folder_tree(), crate::i18n::t("tab_open_sftp_session"))
             };
-            items = items.push(self.menu_item(glyph, label, Message::Tabs(TabsMessage::ToggleTabFilesMode(idx)), OryxisColors::t().text_secondary));
+            items.push(self.menu_item(glyph, label, Message::Tabs(TabsMessage::ToggleTabFilesMode(idx)), OryxisColors::t().text_secondary));
         }
         // The console, offered whenever this tab names a host it could
         // open one on. Deliberately NOT gated on `has_session`: the
@@ -336,7 +352,7 @@ impl Oryxis {
         // so a tab whose session dropped can still open one, which is
         // exactly when someone reaches for it.
         if self.sftp_enabled && self.tab_console_target(idx).is_some() {
-            items = items.push(self.menu_item(
+            items.push(self.menu_item(
                 iced_fonts::lucide::square_terminal(),
                 crate::i18n::t("open_sftp_console"),
                 Message::Sftp(SftpMessage::OpenSftpConsoleForTab(idx)),
@@ -346,17 +362,17 @@ impl Oryxis {
         if has_session && self.sftp_enabled {
             // Promote the tab's SFTP session to a standalone tab
             // (the server-to-server dual-remote surface).
-            items = items.push(self.menu_item(iced_fonts::lucide::external_link(), crate::i18n::t("tab_detach_sftp"), Message::Tabs(TabsMessage::DetachTabSftp(idx)), OryxisColors::t().text_secondary));
+            items.push(self.menu_item(iced_fonts::lucide::external_link(), crate::i18n::t("tab_detach_sftp"), Message::Tabs(TabsMessage::DetachTabSftp(idx)), OryxisColors::t().text_secondary));
             // Close just the SFTP session, back to a plain
             // terminal tab (the terminal keeps running).
-            items = items.push(self.menu_item(iced_fonts::lucide::x(), crate::i18n::t("tab_close_sftp_session"), Message::Tabs(TabsMessage::CloseTabSftpSession(idx)), OryxisColors::t().text_secondary));
+            items.push(self.menu_item(iced_fonts::lucide::x(), crate::i18n::t("tab_close_sftp_session"), Message::Tabs(TabsMessage::CloseTabSftpSession(idx)), OryxisColors::t().text_secondary));
         }
         // Quick-connect tab: offer to persist the ad-hoc host into
         // the vault (opens the editor prefilled as a new host).
         if let Some(crate::state::PaneOrigin::QuickHost(qid)) =
             self.tabs.get(idx).map(|t| &t.active().origin)
         {
-            items = items.push(self.menu_item(iced_fonts::lucide::save(), crate::i18n::t("quick_connect_save_host"), Message::Editor(EditorMessage::SaveQuickHost(*qid)), OryxisColors::t().accent));
+            items.push(self.menu_item(iced_fonts::lucide::save(), crate::i18n::t("quick_connect_save_host"), Message::Editor(EditorMessage::SaveQuickHost(*qid)), OryxisColors::t().accent));
         }
         // Save the whole arrangement (panes + splits + per-pane
         // scripts) as a reusable session group, or edit it if this
@@ -373,7 +389,7 @@ impl Oryxis {
             } else {
                 crate::i18n::t("save_session_group")
             };
-            items = items.push(self.menu_item(iced_fonts::lucide::boxes(), sg_label, Message::SessionGroup(SessionGroupMessage::ShowSaveSessionGroup(idx)), OryxisColors::t().text_secondary));
+            items.push(self.menu_item(iced_fonts::lucide::boxes(), sg_label, Message::SessionGroup(SessionGroupMessage::ShowSaveSessionGroup(idx)), OryxisColors::t().text_secondary));
         }
         // Pin / unpin: pinned tabs render first and restore on launch.
         // The restore spec captures only a single pane's origin, so
@@ -387,7 +403,7 @@ impl Oryxis {
             } else {
                 (iced_fonts::lucide::pin(), crate::i18n::t("pin_tab"))
             };
-            items = items.push(self.menu_item(pin_icon, pin_label, Message::Tabs(TabsMessage::ToggleTabPin(idx)), OryxisColors::t().text_secondary));
+            items.push(self.menu_item(pin_icon, pin_label, Message::Tabs(TabsMessage::ToggleTabPin(idx)), OryxisColors::t().text_secondary));
         }
         // "Duplicate in New Window" spawns a fresh process that
         // can only re-open hosts saved in the vault. ECS Exec /
@@ -401,7 +417,7 @@ impl Oryxis {
             .map(|t| t.relaunch.is_none())
             .unwrap_or(true);
         if new_window_ok {
-            items = items.push(self.menu_item(iced_fonts::lucide::external_link(), crate::i18n::t("duplicate_new_window"), Message::Tabs(TabsMessage::DuplicateInNewWindow(idx)), OryxisColors::t().text_secondary));
+            items.push(self.menu_item(iced_fonts::lucide::external_link(), crate::i18n::t("duplicate_new_window"), Message::Tabs(TabsMessage::DuplicateInNewWindow(idx)), OryxisColors::t().text_secondary));
         }
         // Copy the focused pane's host address. Only offered when the pane's
         // origin still resolves to a connection: a local shell, an SSM / ECS
@@ -413,7 +429,7 @@ impl Oryxis {
             .and_then(|pane_id| self.pane_origin_connection(pane_id))
             .is_some()
         {
-            items = items.push(self.menu_item(iced_fonts::lucide::clipboard_copy(), crate::i18n::t("copy_host_address"), Message::Tabs(TabsMessage::CopyTabAddress(idx)), OryxisColors::t().text_secondary));
+            items.push(self.menu_item(iced_fonts::lucide::clipboard_copy(), crate::i18n::t("copy_host_address"), Message::Tabs(TabsMessage::CopyTabAddress(idx)), OryxisColors::t().text_secondary));
         }
         // "Copy Screen" belongs to the terminal's own context menu, which
         // only exists under the Menu right-click scheme: on the other two
@@ -428,24 +444,24 @@ impl Oryxis {
             && let Some(pane_id) =
                 self.tabs.get(idx).filter(|t| !t.files_mode).map(|t| t.active().id)
         {
-            items = items.push(self.menu_item(
+            items.push(self.menu_item(
                 iced_fonts::lucide::clipboard_copy(),
                 crate::i18n::t("terminal_copy_screen"),
                 Message::Terminal(TerminalMessage::TerminalCopyScreen(pane_id)),
                 OryxisColors::t().text_secondary,
             ));
         }
-        items = items.push(self.menu_item(iced_fonts::lucide::rotate_cw(), crate::i18n::t("reconnect"), Message::Tabs(TabsMessage::ReconnectTab(idx)), OryxisColors::t().accent));
-        items = items.push(self.menu_item(iced_fonts::lucide::x(), crate::i18n::t("close_tab"), Message::Tabs(TabsMessage::CloseTab(idx)), OryxisColors::t().text_secondary));
+        items.push(self.menu_item(iced_fonts::lucide::rotate_cw(), crate::i18n::t("reconnect"), Message::Tabs(TabsMessage::ReconnectTab(idx)), OryxisColors::t().accent));
+        items.push(self.menu_item(iced_fonts::lucide::x(), crate::i18n::t("close_tab"), Message::Tabs(TabsMessage::CloseTab(idx)), OryxisColors::t().text_secondary));
         // Right under the closes, and only with something to bring back:
         // an entry that is always there and usually does nothing reads as
         // broken the first time it is tried (issue #186).
         if !self.closed_tabs.is_empty() {
-            items = items.push(self.menu_item(iced_fonts::lucide::rotate_ccw(), crate::i18n::t("reopen_closed_tab"), Message::Tabs(TabsMessage::ReopenClosedTab), OryxisColors::t().text_secondary));
+            items.push(self.menu_item(iced_fonts::lucide::rotate_ccw(), crate::i18n::t("reopen_closed_tab"), Message::Tabs(TabsMessage::ReopenClosedTab), OryxisColors::t().text_secondary));
         }
-        items = items.push(self.menu_item(iced_fonts::lucide::x(), crate::i18n::t("close_other_tabs"), Message::Tabs(TabsMessage::CloseOtherTabs(idx)), OryxisColors::t().text_secondary));
-        items = items.push(self.menu_item(iced_fonts::lucide::x(), crate::i18n::t("close_all_tabs"), Message::Tabs(TabsMessage::CloseAllTabs), OryxisColors::t().error));
-        items.into()
+        items.push(self.menu_item(iced_fonts::lucide::x(), crate::i18n::t("close_other_tabs"), Message::Tabs(TabsMessage::CloseOtherTabs(idx)), OryxisColors::t().text_secondary));
+        items.push(self.menu_item(iced_fonts::lucide::x(), crate::i18n::t("close_all_tabs"), Message::Tabs(TabsMessage::CloseAllTabs), OryxisColors::t().error));
+        items
     }
 
     pub(crate) fn build_menu_sftp_tab_actions(&self, idx: usize) -> Element<'_, Message> {

@@ -97,6 +97,22 @@ impl Oryxis {
                 // Host-key prompt for a backgrounded action (a manually toggled
                 // port forward). No outside-click dismiss for the same reason.
                 Some((self.view_host_key_modal(), None, 40.0))
+            } else if let Some(dialog) = self.error_dialog.clone()
+                && !matches!(self.vault_ui.state, VaultState::Unlocked)
+            {
+                // The error dialog renders inside `view_main`, which the
+                // lock screen replaces. A dialog raised WHILE locked (the
+                // close-window guard under a soft lock, an async failure
+                // report) has to surface here, or it sits invisible over
+                // the lock screen, eating Enter and blocking the close it
+                // was asking about. The soft lock sweeps the dialogs that
+                // predate it, so nothing destructive from the unlocked
+                // app is offered on this screen.
+                Some((
+                    self.build_error_dialog(dialog),
+                    Some(Message::ErrorDialogDismiss),
+                    40.0,
+                ))
             } else if self.cert_viewer.is_some()
                 && matches!(self.vault_ui.state, VaultState::Unlocked)
             {

@@ -244,6 +244,7 @@ impl Oryxis {
                 .unwrap_or_else(crate::dispatch::unrouted),
             m @ (SftpMessage::SelectSftpTab(..)
             | SftpMessage::CloseSftpTab(..)
+            | SftpMessage::CloseSftpTabLiveConfirmed(..)
             | SftpMessage::NewSftpTab
             | SftpMessage::ConfirmCloseSftpTab
             | SftpMessage::CancelCloseSftpTab

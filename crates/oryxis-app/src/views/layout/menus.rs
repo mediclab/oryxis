@@ -126,12 +126,17 @@ impl Oryxis {
             .total;
         }
         let items: f32 = match &overlay.content {
-            // A flat count, unlike the host menus below, because this
-            // one's conditional entries have always been budgeted for
-            // rather than counted. The console row (issue #188) fits in
-            // the slack that leaves; when the next entry does not, this
-            // wants the `*_menu_rows` treatment its neighbours got.
-            OverlayContent::TabActions(_) => 13.0,
+            // Counted next to its builder (`tab_actions_menu_rows`): the
+            // menu runs from 13 rows to over 20 with the tab's state, and
+            // the flat count it carried let the last rows draw past the
+            // bottom edge of a bottom-docked strip. A tab that vanished
+            // under the menu counts as nothing; the overlay sweep retires
+            // it the same frame.
+            OverlayContent::TabActions(id) => self
+                .tabs
+                .iter()
+                .position(|t| t._id == *id)
+                .map_or(0.0, |idx| self.tab_actions_menu_rows(idx)),
             OverlayContent::HostTagFilter | OverlayContent::HistoryTagFilter => {
                 (self.distinct_host_tags().len() + 1) as f32
             }

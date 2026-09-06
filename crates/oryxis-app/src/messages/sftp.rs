@@ -68,6 +68,10 @@ pub enum SftpMessage {
     /// Close the SFTP tab at this index. Guards against an in-flight transfer
     /// / unsaved edit-session via a confirmation modal.
     CloseSftpTab(usize),
+    /// The "close this tab with a live session?" guard was answered yes
+    /// for the standalone SFTP tab with this id (resolved to a row at
+    /// execution time, never carried as one).
+    CloseSftpTabLiveConfirmed(uuid::Uuid),
     /// Open a fresh, empty SFTP tab (host picker) and focus it.
     NewSftpTab,
     /// Proceed with closing the SFTP tab pending confirmation (after the
