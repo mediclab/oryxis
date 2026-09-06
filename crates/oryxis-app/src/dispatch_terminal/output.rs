@@ -290,6 +290,18 @@ impl Oryxis {
     }
 
     fn flush_session_logs_inner(&mut self, final_flush: bool) {
+        // Nothing is written while the vault is soft-locked: the master
+        // key is zeroized, so an append would come back `Locked`, and
+        // the failure path below reads a refused append as a full disk
+        // and stops EVERY recording. The buffers stay on their panes and
+        // the flush subscription, which is unmounted for the same reason,
+        // drains them once the vault is open again. Guarded here rather
+        // than at the callers because the ones that reach this under a
+        // lock (a local shell exiting, a pane moving) are not the ones
+        // anybody remembers.
+        if self.vault_ui.state != crate::state::VaultState::Unlocked {
+            return;
+        }
         // Full detail = timed segments + resize events (.cast export);
         // simple = one untimed chunk per flush, the plain log of old.
         let full = self.prefs.session_log_full;
@@ -482,20 +494,25 @@ impl Oryxis {
         // Collected here and written after the vault loop: the mirror is
         // a copy of what was STORED, so it never carries a byte the
         // recording did not, redaction included.
-        let mut mirror_writes: Vec<(std::path::PathBuf, Vec<u8>)> = Vec::new();
+        let mut mirror_writes: Vec<(uuid::Uuid, std::path::PathBuf, Vec<u8>)> = Vec::new();
         if let Some(vault) = &self.vault {
             for (log_id, row) in pending {
                 match row {
                     PendingSessionRow::Chunk(offset_ms, bytes) => {
                         let scrubbed = crate::session_redact::redact_secrets(&bytes);
-                        if let Some(path) = mirror_paths.get(&log_id) {
-                            mirror_writes.push((path.clone(), scrubbed.to_vec()));
-                        }
-                        if let Err(e) = vault.append_session_data(
-                            &log_id, &scrubbed, offset_ms, compress,
-                        ) {
-                            tracing::warn!("session log append failed for {log_id}: {e}");
-                            append_failed = true;
+                        match vault.append_session_data(&log_id, &scrubbed, offset_ms, compress) {
+                            // Queued only once the vault has it, so the
+                            // file can never hold a chunk the recording
+                            // lost.
+                            Ok(()) => {
+                                if let Some(path) = mirror_paths.get(&log_id) {
+                                    mirror_writes.push((log_id, path.clone(), scrubbed.to_vec()));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("session log append failed for {log_id}: {e}");
+                                append_failed = true;
+                            }
                         }
                     }
                     PendingSessionRow::Resize(offset_ms, cols, rows) => {
@@ -509,13 +526,27 @@ impl Oryxis {
                 }
             }
         }
-        // A failing mirror is reported and nothing else: the recording
-        // in the vault is the record, and a full disk or a folder the
-        // user moved must not take the session's own log down with it.
-        for (path, bytes) in mirror_writes {
+        // A failing mirror never takes the recording down with it: the
+        // vault is the record, and a full disk or a folder the user
+        // unplugged is the mirror's problem alone. It IS the user's
+        // problem too, though: a file that stops growing while the
+        // toggle still reads on is a failure nobody can see. So the
+        // mirror is switched off for the sessions it failed on, and
+        // said once.
+        let mut mirror_failed: Vec<uuid::Uuid> = Vec::new();
+        for (log_id, path, bytes) in mirror_writes {
             if let Err(e) = self.append_session_log_file(&path, &bytes) {
                 tracing::warn!("session log file append failed for {}: {e}", path.display());
+                mirror_failed.push(log_id);
             }
+        }
+        if !mirror_failed.is_empty() {
+            for pane in self.tabs.iter_mut().flat_map(|t| t.pane_grid.panes.values_mut()) {
+                if pane.session_log_id.is_some_and(|id| mirror_failed.contains(&id)) {
+                    pane.session_log_file = None;
+                }
+            }
+            self.set_toast_secs(crate::i18n::t("session_log_file_stopped").to_string(), 8);
         }
         if append_failed {
             self.stop_all_session_logs("session_log_stopped_disk");

@@ -2059,6 +2059,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_compress_desc" => "Compresse la sortie enregistrée avant chiffrement. Les longues sessions n'occupent qu'une fraction de l'espace.",
         "session_log_file" => "Écrire aussi un fichier texte",
         "setting_session_log_file_desc" => "Recopie l'enregistrement dans un fichier texte pendant la session, pour le suivre ailleurs ou le transmettre. Ce fichier n'est pas chiffré, contrairement à l'enregistrement dans le coffre.",
+        "session_log_file_stopped" => "Le fichier texte n'a pas pu être écrit ; la recopie est désactivée pour cette session. L'enregistrement dans le coffre continue.",
         "connection_history" => "Historique des connexions",
         "setting_connection_history_desc" => "Enregistre les événements de connexion (connexions, déconnexions, échecs d'authentification, erreurs) dans le coffre.",
         "session_log_default" => "Par défaut",

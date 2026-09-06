@@ -36,6 +36,11 @@ pub(crate) fn sanitize_file_stem(label: &str) -> String {
     if s.is_empty() {
         s.push('_');
     }
+    // A leading dash would make the file name an OPTION to `cat`, `tail`
+    // and everything else the file exists to be handed to.
+    if s.starts_with('-') {
+        s.replace_range(0..1, "_");
+    }
     s
 }
 

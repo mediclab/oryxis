@@ -13,7 +13,10 @@
 //! pass that reaches the disk. And what lands there is what a person
 //! read, not the wire: the chunk goes through the linear ANSI renderer
 //! (`ansi_render`, the transcript export's own pipeline), so a progress
-//! bar is one line rather than a thousand escape sequences.
+//! bar is one line per flush rather than a thousand escape sequences.
+//! Per flush, because each chunk is rendered on its own: a redraw that
+//! reaches back into the previous chunk cannot, so a bar that repaints
+//! in place for ten seconds lands as a handful of lines, not one.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -71,9 +74,11 @@ impl Oryxis {
     /// Append one flushed chunk to the mirror, creating the folder and
     /// the file on the first call.
     ///
-    /// Owner-only (0700 / 0600) like the command log and the vault file
-    /// itself: the content is plaintext by design, which is no reason to
-    /// let the other accounts on the machine read a session.
+    /// Owner-only (0700 / 0600) on unix, like the command log and the
+    /// vault file itself: the content is plaintext by design, which is
+    /// no reason to let the other accounts on the machine read a
+    /// session. Windows has no mode to set, so the file takes the
+    /// folder's ACL, which is the user's to choose.
     pub(crate) fn append_session_log_file(
         &self,
         path: &Path,

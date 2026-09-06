@@ -102,6 +102,13 @@ impl Oryxis {
                     // Sweep UI that may hold typed or revealed secrets;
                     // everything else (tabs, terminals) stays.
                     self.revealed_secrets.clear();
+                    // A confirm dialog from the unlocked app must not
+                    // outlive the lock: the lock screen now renders a
+                    // dialog that exists (so the close-window guard can
+                    // ask there), and a "Delete?" from before the lock
+                    // would be one click from acting on a vault whose
+                    // owner walked away.
+                    self.error_dialog = None;
                     self.panels.host_panel = false;
                     self.host_panel_error = None;
                     self.editor_form = crate::state::ConnectionForm::default();
@@ -190,6 +197,10 @@ impl Oryxis {
                     // Same for the MCP panel's master-password confirm.
                     self.mcp.vault_pw_prompt = None;
                     self.mcp.vault_pw_error = false;
+                    // The one Show on the MCP panel governs the master
+                    // password too (when the snippet embeds it); a reveal
+                    // left on would spell it out the moment the vault opens.
+                    self.mcp.token_visible = false;
                     // SFTP modals carry remote paths and live action buttons;
                     // root_view already stops rendering them while locked, but
                     // sweep the state so none reappears after unlock. A watch
@@ -297,6 +308,10 @@ impl Oryxis {
                         // And the MCP panel's typed confirm buffer.
                         self.mcp.vault_pw_prompt = None;
                         self.mcp.vault_pw_error = false;
+                        // The one Show on the MCP panel governs the master
+                        // password too (when the snippet embeds it); a reveal
+                        // left on would spell it out the moment the vault opens.
+                        self.mcp.token_visible = false;
                         // Same reset as the soft lock: lead with biometrics.
                         self.vault_ui.password_fallback = false;
                         self.connections.clear();

@@ -87,6 +87,11 @@ impl Oryxis {
                 }
             }
             SettingsMessage::ChangeSettingsSection(section) => {
+                // A secret revealed on the MCP panel is masked again on
+                // any section change: the reveal is for the moment of
+                // copying it, not a state the panel keeps while the user
+                // is elsewhere.
+                self.mcp.token_visible = false;
                 // Leaving the Shortcuts editor cancels any pending
                 // capture; otherwise the next keystroke on the new
                 // section would silently rebind the action.

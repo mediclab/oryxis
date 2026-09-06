@@ -2006,6 +2006,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_compress_desc" => "Komprimiert die aufgezeichnete Ausgabe vor der Verschlüsselung. Lange Sitzungen belegen nur einen Bruchteil des Speicherplatzes.",
         "session_log_file" => "Zusätzlich eine Textdatei schreiben",
         "setting_session_log_file_desc" => "Spiegelt die Aufzeichnung während der Sitzung in eine Textdatei, zum Mitlesen anderswo oder zum Weitergeben. Diese Datei ist nicht verschlüsselt, anders als die Aufzeichnung im Tresor.",
+        "session_log_file_stopped" => "Die Textdatei konnte nicht geschrieben werden; die Spiegelung ist für diese Sitzung aus. Die Aufzeichnung im Tresor läuft weiter.",
         "connection_history" => "Verbindungsverlauf",
         "setting_connection_history_desc" => "Zeichnet Verbindungsereignisse (Verbindungen, Trennungen, Authentifizierungsfehler, Fehler) im Tresor auf.",
         "session_log_default" => "Standard",

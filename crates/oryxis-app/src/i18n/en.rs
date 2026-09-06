@@ -753,6 +753,7 @@ pub(super) fn lookup(key: &str) -> &'static str {
         "setting_session_log_compress_desc" => "Compress recorded output before it is encrypted. Long sessions take a fraction of the space.",
         "session_log_file" => "Also write a plain text file",
         "setting_session_log_file_desc" => "Mirrors the recording into a text file while the session runs, for tailing it elsewhere or handing it to someone. That file is not encrypted, unlike the recording in the vault.",
+        "session_log_file_stopped" => "The plain text file could not be written; the mirror is off for this session. The recording in the vault continues.",
         "connection_history" => "Connection history",
         "setting_connection_history_desc" => "Record connection events (connects, disconnects, auth failures, errors) to the vault.",
         "session_log_default" => "Default",

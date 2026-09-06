@@ -2012,6 +2012,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_compress_desc" => "Comprime la salida grabada antes de cifrarla. Las sesiones largas ocupan una fracción del espacio.",
         "session_log_file" => "Escribir también un archivo de texto",
         "setting_session_log_file_desc" => "Refleja la grabación en un archivo de texto mientras la sesión está en marcha, para seguirla desde fuera o entregarla a alguien. Ese archivo no está cifrado, a diferencia de la grabación en la bóveda.",
+        "session_log_file_stopped" => "No se pudo escribir el archivo de texto; el espejo queda desactivado en esta sesión. La grabación en la bóveda continúa.",
         "connection_history" => "Historial de conexiones",
         "setting_connection_history_desc" => "Graba eventos de conexión (conexiones, desconexiones, fallos de autenticación, errores) en la bóveda.",
         "session_log_default" => "Predeterminado",

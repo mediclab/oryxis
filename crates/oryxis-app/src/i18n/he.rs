@@ -753,6 +753,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_compress_desc" => "דחיסת הפלט המוקלט לפני ההצפנה. סשנים ארוכים תופסים חלק קטן מהמקום.",
         "session_log_file" => "כתוב גם קובץ טקסט רגיל",
         "setting_session_log_file_desc" => "משכפל את ההקלטה לקובץ טקסט בזמן שהסשן רץ, למעקב ממקום אחר או להעברה למישהו. הקובץ הזה אינו מוצפן, בניגוד להקלטה בכספת.",
+        "session_log_file_stopped" => "לא ניתן היה לכתוב את קובץ הטקסט; השכפול כובה לסשן זה. ההקלטה בכספת נמשכת.",
         "connection_history" => "היסטוריית חיבורים",
         "setting_connection_history_desc" => "תיעוד אירועי חיבור (התחברויות, ניתוקים, כשלי אימות, שגיאות) לכספת.",
         "session_log_default" => "ברירת מחדל",

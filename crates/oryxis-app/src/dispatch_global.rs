@@ -215,9 +215,14 @@ impl Oryxis {
                 // legacy scheduled sleep-timer). Only the current toast's
                 // own elapsed deadline clears it, so a superseded timer can
                 // never wipe a newer toast.
-                if self
-                    .toast_deadline
-                    .is_some_and(|d| std::time::Instant::now() >= d)
+                // Never while the window is unfocused: a toast raised then
+                // (the fallback for an OS notification the desktop refused
+                // is the usual one) would be gone before anyone looked.
+                // The focus-return handler re-stamps the deadline.
+                if self.window_focused
+                    && self
+                        .toast_deadline
+                        .is_some_and(|d| std::time::Instant::now() >= d)
                 {
                     self.toast = None;
                     self.toast_deadline = None;

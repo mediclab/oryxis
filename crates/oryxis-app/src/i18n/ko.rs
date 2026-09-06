@@ -734,6 +734,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_compress_desc" => "기록된 출력을 암호화 전에 압축합니다. 긴 세션의 저장 공간이 크게 줄어듭니다.",
         "session_log_file" => "일반 텍스트 파일로도 기록",
         "setting_session_log_file_desc" => "세션이 진행되는 동안 기록을 텍스트 파일에 함께 씁니다. 다른 곳에서 따라 보거나 누군가에게 건네줄 때 쓰입니다. 이 파일은 보관함의 기록과 달리 암호화되지 않습니다.",
+        "session_log_file_stopped" => "텍스트 파일을 쓸 수 없어 이 세션의 동시 기록이 꺼졌습니다. 금고의 기록은 계속됩니다.",
         "connection_history" => "연결 기록",
         "setting_connection_history_desc" => "연결 이벤트(연결, 연결 해제, 인증 실패, 오류)를 보관소에 기록합니다.",
         "session_log_default" => "기본값",
