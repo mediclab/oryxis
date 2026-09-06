@@ -188,7 +188,20 @@ coming next, see the [Roadmap](../README.md#roadmap).
   256-color, truecolor, mouse selection, scrollback.
 - **Split panes.** Split a tab into a tmux/iTerm-style grid; each pane is
   its own session (saved host or local shell), with keyboard / paste /
-  snippets / AI targeting the focused pane.
+  snippets / AI targeting the focused pane. Drag a pane by its header to
+  rearrange the grid, drop it on another tab's chip to move it there, or
+  break it out into a tab of its own (pane menu, tab menu, header button
+  or Ctrl+Alt+P); the session travels with it, scrollback and recording
+  included. Optional per-pane title bars (Settings > Terminal > Split
+  panes) name each pane, show its state and carry restart / close.
+- **A pane ends on its own terms.** When one pane's session ends (a
+  remote disconnect, a local shell that exited), the pane keeps what it
+  was showing and offers to restart in place or close, without touching
+  its siblings; Settings > Interface picks whether that happens by hand
+  or automatically.
+- **Closing asks first (opt-in).** A tab, the window or the tray's Quit
+  with a live session behind it asks before ending it; off by default,
+  like most SSH clients.
 - **Session groups.** Save a split arrangement (panes + split tree +
   per-pane startup scripts) as a reusable, credential-free entity.
 - **Smart tabs.** A command that ran past a threshold and finished while
@@ -207,12 +220,25 @@ coming next, see the [Roadmap](../README.md#roadmap).
   terminal resizes; any session exports as an asciicast v3 `.cast` file
   with your terminal theme embedded, or as a plain-text transcript.
   Output-only by design, so keystrokes never leak into a recording.
+- **A recording can mirror itself into a plain text file** while the
+  session runs (Settings > Security), for tailing from another window or
+  handing to someone without the vault. Same bytes the vault stores,
+  redaction included; the file itself is not encrypted, and Privacy Mode
+  masking is render-only, so it carries what the host printed.
 - **Search inside recordings.** The History screen searches the session
   content itself, not just titles, decrypting on demand with a bounded
   scan, and can filter to the hosts a given command ever ran on.
 - **Pinned & reorderable tabs.** Pin tabs (restored on next launch, lazy
   reconnect), drag to reorder, rename, MRU switching with Ctrl+Tab, and an
   optional bottom tab bar.
+- **Last session's tabs come back (opt-in).** Settings > Interface can
+  bring every tab that was open back as a dormant chip at launch, the
+  way a pin does; nothing dials until you select it.
+- **Recent hosts, one click away.** The `+` popover and the tab strip's
+  right-click menu list the hosts you connected to last; the same list
+  feeds the tray submenu and the Windows JumpList.
+- **Copy Screen.** The terminal's context menu (or the tab menu, under
+  the other right-click schemes) copies the screen exactly as drawn.
 - **Syntax highlighting.** IPs, URLs, and file paths auto-detected and
   colored.
 - **Clickable links, including the ones that log in.** Ctrl+click follows
@@ -232,7 +258,7 @@ coming next, see the [Roadmap](../README.md#roadmap).
   toggles in Settings > Terminal, on by default, and a link that would
   open a port on your machine is confirmed either way, since the forward
   is described nowhere else.
-- **17 terminal palettes plus custom schemes.** Picker with inline swatch
+- **31 terminal palettes plus custom schemes.** Picker with inline swatch
   previews, global or per-host; build your own, clone a built-in as a
   starting point, or import iTerm / Windows Terminal / base16 from a
   pasted blob or a file. Terminal and UI themes both export back out, so
@@ -393,9 +419,12 @@ panel turns it on, next to the other optional ones). Switching it back off close
 - **Dual-pane layout.** Local and remote side by side, with sortable
   columns.
 - **Interactive console.** A surface that speaks `sftp(1)`: `get`, `put`,
-  `mget`, `mput`, `reget`, `reput`, `ls`, `cd`, `lcd`, `lls`, `lpwd`,
-  `mkdir`, `lmkdir`, `rm`, `rmdir`, `rename`, `chmod`, `progress`,
-  `version` and `help`, with globs, Tab completion on remote paths, a
+  `mget`, `mput`, `reget`, `reput`, `ls` (`-l` with owner names,
+  `-n` for the numbers), `cd`, `lcd`, `lls`, `lpwd`, `mkdir`, `lmkdir`,
+  `rm`, `rmdir`, `rename`, `copy`, `ln`, `symlink`, `chmod`, `chown`,
+  `chgrp`, `df`, `lumask`, `progress`, `version` and `help`, with the
+  `-a` / `-f` / `-p` / `-r` flags, globs, Tab completion on remote and
+  local paths (a Tab that cannot extend the word lists what is there), a
   command history and byte-level progress inline. Opened from the host
   card, the tab menu or Ctrl+Shift+S (Cmd+Shift+S on macOS), and offered
   only on SSH hosts that are not carrying mosh, since it dials the same
@@ -430,7 +459,9 @@ panel turns it on, next to the other optional ones). Switching it back off close
   manual navigation unpins, one click follows again). The title fallback
   is a heuristic, so exact following on any prompt takes a one-time
   snippet in your rc: see the [cwd guide](CWD.md). Rows click-select
-  and double-click to enter, matching the SFTP panes; the recent-folder
+  and double-click to enter, matching the SFTP panes, with Ctrl/Cmd-click
+  and Shift-range multi-select and Copy N paths / Download N items /
+  Delete N items on the selection; the recent-folder
   history is remembered per host across sessions (encrypted like the
   rest of the trail), and the mouse thumb buttons walk it back and
   forward on any visible file surface.
@@ -815,6 +846,7 @@ the app's own actions sit on `Ctrl+Shift`.
 | `Ctrl+Shift+S` | Open the active tab's SFTP console, or switch between it and the shell |
 | `Ctrl+Shift+Z` | Maximize / restore the focused pane |
 | `Ctrl+Shift+D` / `Ctrl+Shift+O` | Split the tab side by side / stacked |
+| `Ctrl+Alt+P` | Move the focused pane into a tab of its own |
 | `Ctrl+Shift+H` | Focus the terminal sidebar |
 | `Ctrl+Shift+P` | Command palette |
 | `Ctrl+Shift+L` | Open local terminal |
