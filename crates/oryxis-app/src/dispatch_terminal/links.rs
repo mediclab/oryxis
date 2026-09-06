@@ -31,8 +31,8 @@ use super::*;
 use crate::terminal_link::{display_target, loopback_callback, LoopbackCallback};
 
 /// Idle grace once the callback has been served. The redirect is a
-/// single short request; a couple of seconds covers a browser that
-/// re-issues it (a favicon fetch, a retry) before the tunnel goes.
+/// single short request; a few seconds cover a browser that re-issues
+/// it (a favicon fetch, a retry) before the tunnel goes.
 const CALLBACK_IDLE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long a callback tunnel waits for a browser that never arrives.
@@ -50,15 +50,20 @@ const URL_DISPLAY_CHARS: usize = 180;
 #[derive(Debug, Clone)]
 pub(crate) struct LinkConfirmCard {
     /// The pane the link was clicked in, and the only session its
-    /// callback may be tunnelled through.
-    pub pane_id: Uuid,
+    /// callback may be tunnelled through. `None` for a link in a
+    /// RECORDING (the session player, the history viewer): remote text
+    /// still, so it is confirmed, but there is no session behind it to
+    /// tunnel anything through.
+    pub pane_id: Option<Uuid>,
     /// The real target, handed to the OS if the user agrees. Shown in
     /// full-ish form (elided in the middle) rather than behind a label,
     /// because agreeing to a name you cannot check is not consent.
     pub url: String,
     /// `url` cut to something a dialog can hold.
     pub display: String,
-    /// The pane's label, naming who printed this.
+    /// The pane's label, naming who printed this. Already run through
+    /// Privacy Mode's redactor: the dialog is a rendered surface like
+    /// the chip and the header.
     pub host_label: String,
     /// The loopback callback the link carries, when it has one.
     pub callback: Option<LoopbackCallback>,
@@ -77,6 +82,15 @@ impl Oryxis {
     /// would be noise). A remote pane asks first when the setting is on,
     /// which it is by default.
     ///
+    /// "Local" is decided by what is writing the pane's bytes, not by
+    /// whether a session handle is attached: a remote pane whose
+    /// connection dropped has `session: None` too, and its scrollback is
+    /// still the remote host's text. So the question is whether the
+    /// terminal owns a PTY, minus the plugin-backed tabs (SSM, ECS Exec,
+    /// `kubectl exec`), whose PTY runs a local process that relays a
+    /// remote shell. A disconnected remote pane therefore asks, with
+    /// nothing to tunnel through.
+    ///
     /// A link that is about to OPEN A PORT on this machine asks whatever
     /// that setting says. The two are not the same question: the setting
     /// governs a warning about where a browser is being sent, while the
@@ -91,29 +105,70 @@ impl Oryxis {
         if let Some(pane) = self.pane_by_id_mut(pane_id) {
             pane.link_hint_shown = true;
         }
-        let Some(pane) = self.pane_by_id(pane_id) else {
+        let Some(tab_idx) = self.pane_tab_index(pane_id) else {
             return Task::none();
         };
-        let Some(transport) = pane.session.as_ref() else {
+        let Some(pane) = self.tabs[tab_idx].pane_by_id(pane_id) else {
+            return Task::none();
+        };
+        let owns_pty = pane.terminal.lock().is_ok_and(|t| t.pty.is_some());
+        if owns_pty && !self.tabs[tab_idx].is_plugin_backed() {
             // Local shell: no remote author, no callback to tunnel.
             return self.launch_link(url);
-        };
-        let tunnelable = transport.ssh().is_some();
-        let host_label = pane.label.clone();
+        }
+        let tunnelable = pane.session.as_ref().is_some_and(|t| t.ssh().is_some());
+        let label = pane.label.clone();
+        let host_label = self.privacy_display_label(&label, &label, &self.privacy_terms());
         let callback = self.link_callback(&url);
-        // A callback with nowhere to be tunnelled (telnet, serial, mosh)
-        // opens no port, so it has nothing of its own to consent to and
-        // follows the setting like any other link.
+        // A callback with nowhere to be tunnelled (telnet, serial, mosh,
+        // a dropped connection) opens no port, so it has nothing of its
+        // own to consent to and follows the setting like any other link.
         if !self.prefs.terminal_link_confirm && !(callback.is_some() && tunnelable) {
-            return self.open_terminal_link(pane_id, url);
+            return self.open_terminal_link(Some(pane_id), url);
         }
         self.link_confirm = Some(LinkConfirmCard {
-            pane_id,
+            pane_id: Some(pane_id),
             display: display_target(&url, URL_DISPLAY_CHARS),
             callback,
             url,
             host_label,
             tunnelable,
+        });
+        Task::none()
+    }
+
+    /// Ctrl+click landed on a link in a RECORDING: the session player or
+    /// the history viewer.
+    ///
+    /// The text was printed by a remote host once, and an OSC 8 label in
+    /// it can still say anything about where it points, so the link is
+    /// confirmed exactly as it would be in a live remote pane. What a
+    /// recording cannot have is a session, so nothing is tunnelled and
+    /// the setting's off position is honoured like any other link's.
+    pub(crate) fn activate_recorded_link(&mut self, url: String) -> Task<Message> {
+        if !self.prefs.terminal_link_confirm {
+            return self.launch_link(url);
+        }
+        let label = self
+            .session_player
+            .as_ref()
+            .map(|p| p.label.clone())
+            .or_else(|| {
+                let log_id = self.viewing_session_log.as_ref()?.log_id;
+                self.session_logs
+                    .iter()
+                    .find(|e| e.id == log_id)
+                    .map(|e| e.label.clone())
+            })
+            .unwrap_or_default();
+        let host_label = self.privacy_display_label(&label, &label, &self.privacy_terms());
+        self.link_confirm = Some(LinkConfirmCard {
+            pane_id: None,
+            display: display_target(&url, URL_DISPLAY_CHARS),
+            callback: None,
+            url,
+            host_label,
+            tunnelable: false,
         });
         Task::none()
     }
@@ -156,12 +211,12 @@ impl Oryxis {
     /// The order matters: the tunnel has to be listening BEFORE the
     /// browser is launched, because the redirect can come back within a
     /// second of the user finishing at the provider.
-    fn open_terminal_link(&mut self, pane_id: Uuid, url: String) -> Task<Message> {
+    fn open_terminal_link(&mut self, pane_id: Option<Uuid>, url: String) -> Task<Message> {
         let Some(callback) = self.link_callback(&url) else {
             return self.launch_link(url);
         };
-        let Some(ssh) = self
-            .pane_by_id(pane_id)
+        let Some(ssh) = pane_id
+            .and_then(|id| self.pane_by_id(id))
             .and_then(|p| p.session.as_ref())
             .and_then(|t| t.ssh())
             .cloned()
@@ -169,6 +224,10 @@ impl Oryxis {
             // Nothing to tunnel through. The link still opens: the user
             // asked for it, and it may be a login they intend to finish
             // by hand on the other machine.
+            return self.launch_link(url);
+        };
+        // The `else` above answered for a recording, so this IS a pane.
+        let Some(pane_id) = pane_id else {
             return self.launch_link(url);
         };
         let port = callback.port;
@@ -315,8 +374,13 @@ impl Oryxis {
     ///
     /// Dropping the `Arc` cancels the tunnel (the app holds the only
     /// strong one), releasing the local port. Called from the pane and
-    /// tab close paths; the tunnels also expire on their own, so a path
-    /// that forgets to call this leaks a port for minutes, not forever.
+    /// tab close paths and, because a restart or an in-place reconnect
+    /// re-keys the pane's id without closing anything, from the end of
+    /// every `update` as well (next to `reconcile_tab_order`); a
+    /// tunnel keyed by an id no pane holds would otherwise keep its port
+    /// bound for the unused timeout, refusing the retried login on the
+    /// new id as "port busy". The map is empty nearly always, so the
+    /// per-update call is one branch.
     pub(crate) fn prune_link_forwards(&mut self) {
         if self.link_forwards.is_empty() {
             return;

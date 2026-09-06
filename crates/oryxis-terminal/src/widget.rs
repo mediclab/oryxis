@@ -176,8 +176,9 @@ pub struct TerminalWidgetState {
     /// hand (hit-tests, the render key, the scrollbar geometry); between
     /// an output batch and the frame that draws it, it lags the grid by
     /// that batch, so a hit-test that already holds the lock reads the
-    /// grid instead. A `Cell` because the immutable-`&self` draw refreshes
-    /// it.
+    /// grid instead, and a press or release refreshes it first
+    /// (`refresh_offset_mirror`). A `Cell` because the immutable-`&self`
+    /// draw refreshes it.
     scroll_offset: std::cell::Cell<i32>,
     /// `render_epoch` observed by the last draw, so the next draw can
     /// tell whether new terminal activity landed (drives the
@@ -622,11 +623,6 @@ pub struct TerminalView<Message = ()> {
     /// gesture missed. Mirrors `on_mouse_capture_hint`; the app stops
     /// wiring it once the hint has been taught for the pane.
     on_link_click_hint: Option<Box<dyn Fn() -> Message>>,
-    /// Emitted after a Ctrl+Click successfully opens a URL, so the app
-    /// can persist "the user knows the gesture" and drop the hint. Not
-    /// emitted when `on_link_activate` is wired: the app opens the link
-    /// itself there, and retires the hint on the same message.
-    on_link_opened: Option<Message>,
     /// Emitted with the resolved target when a Ctrl+Click activates a
     /// link, INSTEAD of the widget opening it.
     ///

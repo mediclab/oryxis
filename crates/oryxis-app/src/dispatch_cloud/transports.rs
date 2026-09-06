@@ -38,12 +38,24 @@ impl Oryxis {
                 } else {
                     crate::i18n::t("cloud_session_ended")
                 };
+                let split = tab.pane_grid.panes.len() > 1;
                 if let Some(pane) =
-                    tab.pane_grid.panes.values().find(|p| p.id == pane_id)
-                    && let Ok(mut term) = pane.terminal.lock()
+                    tab.pane_grid.panes.values_mut().find(|p| p.id == pane_id)
                 {
-                    let notice = format!("\r\n\x1b[2m  {}\x1b[0m\r\n", hint);
-                    term.process(notice.as_bytes());
+                    if let Ok(mut term) = pane.terminal.lock() {
+                        let notice = format!("\r\n\x1b[2m  {}\x1b[0m\r\n", hint);
+                        term.process(notice.as_bytes());
+                    }
+                    // In a split the verdict is the PANE's (issue #208):
+                    // the tab's label suffix belongs to a lone pane, and
+                    // its siblings are still connected. Without this the
+                    // header keeps reading "connected" by elimination.
+                    if split {
+                        pane.ended = true;
+                    }
+                }
+                if split {
+                    return Ok(Task::none());
                 }
                 if !tab.label.ends_with(" (disconnected)") {
                     tab.label.push_str(" (disconnected)");

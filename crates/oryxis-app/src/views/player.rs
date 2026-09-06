@@ -234,7 +234,13 @@ impl Oryxis {
                 .with_privacy_terms(&self.privacy_terms())
                 .with_privacy_classes(self.privacy_classes())
                 .with_smart_contrast(self.prefs.smart_contrast)
-                .with_word_delimiters(&self.prefs.word_delimiters);
+                .with_word_delimiters(&self.prefs.word_delimiters)
+                // A link in a replay is remote text like a link in a live
+                // pane, so it takes the same confirmation on the way out
+                // instead of the widget's own opener.
+                .on_link_activate(|url| {
+                    Message::Terminal(crate::app::TerminalMessage::TerminalLinkActivatedInRecording(url))
+                });
             let term_canvas = canvas(term_view)
                 .width(Length::Fixed(px_w))
                 .height(Length::Fixed(px_h));

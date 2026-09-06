@@ -161,6 +161,8 @@ impl Oryxis {
         // that tab left in this update, so the menu never outlives what
         // it acts on.
         self.reconcile_overlay_tab_target();
+        // A callback tunnel keyed by a pane id that a restart re-keyed.
+        self.prune_link_forwards();
         // Repair the hybrid-tab SFTP ownership invariant: drop a dangling
         // owner (tab removed by a path that bypasses CloseTab) and hoist
         // an active Files-mode tab that some direct `active_tab = ...`

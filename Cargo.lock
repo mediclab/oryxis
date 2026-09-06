@@ -5338,6 +5338,7 @@ dependencies = [
  "iced",
  "iced_fonts",
  "iced_test",
+ "idna",
  "image",
  "libc",
  "notify-rust",

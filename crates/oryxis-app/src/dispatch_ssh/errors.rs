@@ -54,6 +54,17 @@ impl Oryxis {
                 {
                     state.process(format!("\r\nConnection failed: {msg}\r\n").as_bytes());
                 }
+                // In a split, the pane carries its own verdict (issue
+                // #208): `restart_pane` cleared `ended` for the attempt,
+                // and without this the failure would read as "nothing to
+                // report", with no card, no dot and no way back but the
+                // chord. A lone pane is the tab's business, below.
+                if let Some(tab_idx) = self.pane_tab_index(pane_id)
+                    && self.tabs[tab_idx].pane_grid.panes.len() > 1
+                    && let Some(pane) = self.tabs[tab_idx].pane_by_id_mut(pane_id)
+                {
+                    pane.ended = true;
+                }
                 // A failed *in-place reconnect* (single-pane tab whose label
                 // matches a saved host) must fall back to the "(disconnected)"
                 // state so `AutoReconnectTick` keeps retrying up to

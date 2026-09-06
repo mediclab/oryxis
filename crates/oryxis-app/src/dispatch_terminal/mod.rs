@@ -443,16 +443,35 @@ impl Oryxis {
                 }
                 // A local pane leaves no transport handle behind, so the
                 // end-of-session bookkeeping the remote path does before
-                // reaching `note_pane_ended` has to happen here.
-                self.flush_session_logs_final();
-                let log_id = self
+                // reaching `note_pane_ended` has to happen here. Not
+                // under a soft lock, though: the flush cannot write then
+                // (see `flush_session_logs_inner`), and taking the log id
+                // now would orphan the bytes still buffered on the pane.
+                // The recording stays open on the pane and is closed by
+                // whatever closes or restarts it after the unlock.
+                if self.vault_ui.state == crate::state::VaultState::Unlocked {
+                    self.flush_session_logs_final();
+                    let log_id = self
+                        .pane_tab_index(pane_id)
+                        .and_then(|i| self.tabs[i].pane_by_id_mut(pane_id))
+                        .and_then(|p| p.session_log_id.take());
+                    if let Some(log_id) = log_id
+                        && let Some(vault) = &self.vault
+                    {
+                        let _ = vault.end_session_log(&log_id);
+                    }
+                }
+                // The emulator's modes belong to the shell that armed
+                // them, and it is gone: the same reset the remote path
+                // does, or a `vim` killed from another pane leaves this
+                // one reporting the mouse to nobody instead of selecting
+                // the output it exited on.
+                if let Some(pane) = self
                     .pane_tab_index(pane_id)
-                    .and_then(|i| self.tabs[i].pane_by_id_mut(pane_id))
-                    .and_then(|p| p.session_log_id.take());
-                if let Some(log_id) = log_id
-                    && let Some(vault) = &self.vault
+                    .and_then(|i| self.tabs[i].pane_by_id(pane_id))
+                    && let Ok(mut state) = pane.terminal.lock()
                 {
-                    let _ = vault.end_session_log(&log_id);
+                    state.process(oryxis_terminal::SESSION_MODE_RESET);
                 }
                 return self.note_pane_ended(pane_id);
             }
@@ -600,6 +619,9 @@ impl Oryxis {
             }
             TerminalMessage::TerminalLinkActivated(pane_id, url) => {
                 return self.activate_terminal_link(pane_id, url);
+            }
+            TerminalMessage::TerminalLinkActivatedInRecording(url) => {
+                return self.activate_recorded_link(url);
             }
             TerminalMessage::TerminalLinkDecision(open) => {
                 return self.resolve_link_confirm(open);

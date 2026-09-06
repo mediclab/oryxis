@@ -452,10 +452,10 @@ impl HotkeyBinding {
             out.push("Alt".into());
         }
         if self.logo {
-            // Render as Win on Windows / Linux, ⌘ on macOS. iced
-            // doesn't expose the host OS at this layer so we pick
-            // the cross-platform "Super" token.
-            out.push("Super".into());
+            // The key's own name on the platform the binary was built
+            // for: a chord chip reading `Super+Shift+C` on a Mac names
+            // a key its keyboard does not have.
+            out.push(if cfg!(target_os = "macos") { "Cmd" } else { "Super" }.into());
         }
         let primary = match self.primary {
             PrimaryKey::Char(c) => c.to_ascii_uppercase().to_string(),

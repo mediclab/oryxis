@@ -95,8 +95,15 @@ fn as_loopback(url: &str) -> Option<LoopbackCallback> {
 
 /// Split an authority into host and explicit port, keeping an IPv6
 /// literal's brackets on the host (`[::1]:1234` -> `[::1]`, `1234`).
-/// `None` when no port is written, or when what follows the colon is not
-/// a port.
+/// `None` when no port is written, when what follows the colon is not a
+/// port, or when the port is a privileged one.
+///
+/// The floor is deliberate. A CLI's callback listener is bound by an
+/// unprivileged process to an ephemeral or high port, so nothing below
+/// 1024 is ever a login's redirect. It IS the shape of a link asking
+/// this app to forward the local `445` or `22` to the remote for five
+/// minutes, and on Windows an ordinary user can bind those. A question
+/// no honest link asks is not put to the user.
 fn split_host_port(authority: &str) -> Option<(&str, u16)> {
     let (host, port) = if let Some(end) = authority.find(']') {
         let (bracketed, rest) = authority.split_at(end + 1);
@@ -105,8 +112,11 @@ fn split_host_port(authority: &str) -> Option<(&str, u16)> {
         authority.rsplit_once(':')?
     };
     let port: u16 = port.parse().ok()?;
-    (port != 0).then_some((host, port))
+    (port >= LOWEST_CALLBACK_PORT).then_some((host, port))
 }
+
+/// The first port a callback may name: the end of the privileged range.
+const LOWEST_CALLBACK_PORT: u16 = 1024;
 
 /// Whether a host names this machine's loopback interface. All of
 /// `127.0.0.0/8` counts: a callback is not always on `.0.1` (macOS
@@ -163,6 +173,12 @@ fn percent_decode(s: &str) -> String {
 /// Sanitized BEFORE the cut, so the cut can never drop the pop that
 /// closes an override it kept.
 ///
+/// The host is shown the way a browser's address bar shows a host that
+/// is not plain ASCII: as punycode. `https://аpple.com/` with a Cyrillic
+/// `а` reads as Apple's domain in any font, and this dialog exists to be
+/// read; `xn--pple-43d.com` reads as what it is. Only the host segment,
+/// since a path or a query is allowed its own alphabet.
+///
 /// Display only: what gets opened, tunnelled and copied is the real
 /// string.
 pub(crate) fn display_target(url: &str, max: usize) -> String {
@@ -170,7 +186,50 @@ pub(crate) fn display_target(url: &str, max: usize) -> String {
         .chars()
         .map(|c| if c.is_control() || is_bidi_control(c) { '?' } else { c })
         .collect();
-    elide_middle(&shown, max)
+    elide_middle(&ascii_host(&shown), max)
+}
+
+/// `url` with a non-ASCII host rewritten as punycode. Anything that is
+/// not `scheme://authority...`, or whose host is ASCII already, or whose
+/// host IDNA refuses to encode, is returned as it came.
+fn ascii_host(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let (userinfo, hostport) = match authority.rsplit_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, authority),
+    };
+    // A bracketed IPv6 literal is ASCII by construction and never
+    // reaches the encoder; a trailing `:port` is kept off the host.
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) if !h.contains(']') && p.chars().all(|c| c.is_ascii_digit()) => {
+            (h, Some(p))
+        }
+        _ => (hostport, None),
+    };
+    if host.is_ascii() {
+        return url.to_string();
+    }
+    let Ok(ascii) = idna::domain_to_ascii(host) else {
+        return url.to_string();
+    };
+    let mut out = String::with_capacity(url.len() + 8);
+    out.push_str(scheme);
+    out.push_str("://");
+    if let Some(u) = userinfo {
+        out.push_str(u);
+        out.push('@');
+    }
+    out.push_str(&ascii);
+    if let Some(p) = port {
+        out.push(':');
+        out.push_str(p);
+    }
+    out.push_str(tail);
+    out
 }
 
 /// Characters that reorder the text around them instead of drawing
@@ -280,6 +339,25 @@ mod tests {
     }
 
     #[test]
+    fn a_privileged_port_is_never_a_callback() {
+        // No login listens there; a link naming one is asking to forward
+        // this machine's SMB or SSH port, and is not asked.
+        for port in ["445", "22", "80", "1023"] {
+            assert_eq!(
+                cb(&format!(
+                    "https://p.test/a?redirect_uri=http%3A%2F%2F127.0.0.1%3A{port}%2Fcb"
+                )),
+                None,
+                "port {port} was offered for a tunnel"
+            );
+        }
+        assert_eq!(
+            cb("https://p.test/a?redirect_uri=http%3A%2F%2F127.0.0.1%3A1024%2Fcb"),
+            Some(("127.0.0.1".to_string(), 1024))
+        );
+    }
+
+    #[test]
     fn userinfo_does_not_pass_for_a_host() {
         // `evil.com` is the host here, not the loopback in the userinfo.
         assert_eq!(
@@ -291,12 +369,12 @@ mod tests {
     #[test]
     fn the_redirect_key_is_matched_whole_and_case_insensitively() {
         assert_eq!(
-            cb("https://p.test/a?Redirect_URI=http%3A%2F%2F127.0.0.1%3A70%2Fc"),
-            Some(("127.0.0.1".to_string(), 70))
+            cb("https://p.test/a?Redirect_URI=http%3A%2F%2F127.0.0.1%3A7070%2Fc"),
+            Some(("127.0.0.1".to_string(), 7070))
         );
         // A key that merely ends in the same letters is not the one.
         assert_eq!(
-            cb("https://p.test/a?not_redirect_uri=http%3A%2F%2F127.0.0.1%3A70%2Fc"),
+            cb("https://p.test/a?not_redirect_uri=http%3A%2F%2F127.0.0.1%3A7070%2Fc"),
             None
         );
     }
@@ -304,7 +382,7 @@ mod tests {
     #[test]
     fn a_fragment_is_not_searched_for_a_callback() {
         assert_eq!(
-            cb("https://p.test/a?x=1#redirect_uri=http%3A%2F%2F127.0.0.1%3A70%2Fc"),
+            cb("https://p.test/a?x=1#redirect_uri=http%3A%2F%2F127.0.0.1%3A7070%2Fc"),
             None
         );
     }
@@ -343,6 +421,27 @@ mod tests {
         );
         assert_eq!(display_target("https://a.co/\u{2066}b\u{2069}", 80), "https://a.co/?b?");
         assert_eq!(display_target("https://a.co/\u{7}x\ty", 80), "https://a.co/?x?y");
-        assert_eq!(display_target("https://例.com/relatório", 80), "https://例.com/relatório");
+        // A path keeps its alphabet; only the host is spelled in ASCII.
+        assert_eq!(display_target("https://a.co/relatório", 80), "https://a.co/relatório");
+    }
+
+    /// A host that only LOOKS like a familiar one is shown as what it
+    /// is. The Cyrillic `а` in `аpple.com` draws exactly like the Latin
+    /// one; its punycode does not.
+    #[test]
+    fn a_confusable_host_is_shown_as_punycode() {
+        assert_eq!(
+            display_target("https://\u{430}pple.com/login?x=1", 80),
+            "https://xn--pple-43d.com/login?x=1"
+        );
+        // Userinfo, port and a query survive the rewrite around the host.
+        let shown = display_target("http://u@\u{4f8b}.com:8080/p?q=\u{4f8b}#f", 80);
+        let expected_host = idna::domain_to_ascii("\u{4f8b}.com").unwrap();
+        assert!(expected_host.starts_with("xn--"), "{expected_host}");
+        assert_eq!(shown, format!("http://u@{expected_host}:8080/p?q=\u{4f8b}#f"));
+        // ASCII hosts, IPv6 literals and non-URL text are left alone.
+        assert_eq!(display_target("https://apple.com/", 80), "https://apple.com/");
+        assert_eq!(display_target("http://[::1]:8080/x", 80), "http://[::1]:8080/x");
+        assert_eq!(display_target("mailto:a@例.com", 80), "mailto:a@例.com");
     }
 }

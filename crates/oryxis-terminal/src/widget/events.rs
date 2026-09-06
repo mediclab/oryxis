@@ -914,6 +914,7 @@ where
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<CanvasAction<Message>> {
+            self.refresh_offset_mirror(widget_state);
             // The press was consumed by the perf HUD toggle; swallow
             // the matching release so it can't privacy-pin or
             // click-classify the cells underneath the panel.
@@ -1297,12 +1298,29 @@ where
     ///
     /// Split out of `on_event`, whose arm order is load-bearing;
     /// the guard that picks this stayed there.
+    /// Bring the offset mirror up to date with the grid, for a gesture
+    /// that resolves cells from it.
+    ///
+    /// The mirror is refreshed by every scroll gesture and every draw,
+    /// but output that landed since the last frame may have raised the
+    /// grid's offset under a held viewport (that is what keeps the rows
+    /// on screen while `tail -f` runs), and a click arriving in that
+    /// window would resolve the row N lines newer than the one drawn.
+    /// One lock per press or release, not per pixel: the drag path keeps
+    /// its own throttle.
+    fn refresh_offset_mirror(&self, widget_state: &TerminalWidgetState) {
+        if let Ok(state) = self.state.lock() {
+            widget_state.scroll_offset.set(state.viewport_offset());
+        }
+    }
+
     fn on_left_press(
         &self,
         widget_state: &mut TerminalWidgetState,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<CanvasAction<Message>> {
+            self.refresh_offset_mirror(widget_state);
             if let Some(pos) = cursor.position_in(bounds) {
                 // Scrollbar: thumb drag start, or page-up/down on the
                 // empty track area. Only meaningful when there's
@@ -1370,11 +1388,6 @@ where
                             return Some(CanvasAction::publish(cb(url)).and_capture());
                         }
                         let _ = open_url(&url);
-                        // Tell the app the gesture landed so the
-                        // one-time hover hint can retire itself.
-                        if let Some(msg) = self.on_link_opened.clone() {
-                            return Some(CanvasAction::publish(msg).and_capture());
-                        }
                         return Some(CanvasAction::capture());
                     }
                 }

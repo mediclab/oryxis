@@ -946,6 +946,11 @@ impl Oryxis {
                 .into(),
         );
 
+        // Not recorded on a keynav ring, on purpose: the grid is the
+        // terminal's own surface, where the keyboard belongs to the PTY
+        // and no ring is engaged, and every control here already has a
+        // chord (Reconnect, the pane break-out, Close pane), which is how
+        // the keyboard reaches these three without leaving the shell.
         let mut controls: Vec<Element<'a, Message>> = Vec::with_capacity(3);
         if self.pane_restartable(pane) {
             controls.push(pane_header_button(
@@ -1031,6 +1036,8 @@ impl Oryxis {
         let colors = OryxisColors::t();
         let pane_id = pane.id;
         let restartable = self.pane_restartable(pane);
+        // Same keyboard story as the header's controls: the chords cover
+        // both actions, so the card's buttons are not on a ring.
         // Collected first and handed to `dir_row` in one call: it
         // reverses its children AT CONSTRUCTION, so a row built empty
         // and pushed into afterwards keeps physical order and never

@@ -557,7 +557,12 @@ impl Oryxis {
                 .with_privacy_terms(&self.privacy_terms())
                 .with_privacy_classes(self.privacy_classes())
                 .with_smart_contrast(self.prefs.smart_contrast)
-                .with_word_delimiters(&self.prefs.word_delimiters);
+                .with_word_delimiters(&self.prefs.word_delimiters)
+                // Same confirmation as a live remote pane: the transcript
+                // is the remote host's text, OSC 8 labels included.
+                .on_link_activate(|url| {
+                    Message::Terminal(crate::app::TerminalMessage::TerminalLinkActivatedInRecording(url))
+                });
             // Right-click scheme = Menu: the widget has no menu of its
             // own, so wire the read-only transcript context menu (Copy /
             // Copy All). The Paste and Extend schemes copy a live

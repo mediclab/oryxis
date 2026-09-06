@@ -146,8 +146,9 @@ impl Oryxis {
     /// `Pane::id`, so a fresh id sends those to an id no pane holds
     /// instead of stacking a second session onto this terminal.
     pub(crate) fn restart_pane(&mut self, pane_id: Uuid) -> Task<Message> {
-        // Dismiss the context menu when its "Restart pane" row fired
-        // this (a no-op on the card's own button).
+        // Reached from the card, the header and the Reconnect chord; none
+        // of them opens a menu, so this is a no-op today and a guard for
+        // the day one does.
         self.overlay = None;
         let Some(tab_idx) = self.pane_tab_index(pane_id) else {
             return Task::none();

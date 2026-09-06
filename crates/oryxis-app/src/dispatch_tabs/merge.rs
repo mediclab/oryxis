@@ -108,7 +108,11 @@ impl Oryxis {
     /// The inverse of the gesture above, and it reads the same way round:
     /// there, a whole tab is dragged onto a grid to become panes; here,
     /// one pane is dragged onto a chip to join that tab. Both are moves,
-    /// so neither tears a session down.
+    /// so neither tears a session down, and both refuse the same
+    /// destinations: a tab mid-dial (its connect screen replaces the
+    /// grid, and dismissing a failed card REMOVES that tab, sessions and
+    /// all) and a tab in Files mode (the SFTP surface would hide the
+    /// pane that just arrived).
     ///
     /// A chip says WHICH tab and nothing about where in it, so the pane
     /// lands on the destination's trailing edge: predictable without
@@ -153,9 +157,26 @@ impl Oryxis {
         if dest.pending_reopen.is_some() {
             return false;
         }
+        if self.connecting.as_ref().is_some_and(|c| c.tab_idx == dest_idx) {
+            return false;
+        }
+        if dest.files_mode {
+            return false;
+        }
         let Some(src) = self.tabs.get(src_idx) else {
             return false;
         };
+        // One console per tab: the surface switch answers "which
+        // console" by taking the first, so a second one would be
+        // unreachable from it.
+        if src
+            .pane_grid
+            .get(handle)
+            .is_some_and(|p| p.purpose == crate::state::PanePurpose::SftpConsole)
+            && dest.console_pane().is_some()
+        {
+            return false;
+        }
         // The last pane of a tab cannot leave this way: the tab would be
         // left empty, and the gesture cannot start on it anyway (a lone
         // pane grows no header, so there is no handle to drag).
@@ -181,9 +202,12 @@ impl Oryxis {
             vec![pane],
         );
         // The arriving pane takes the destination's focus, so switching
-        // to that tab lands on what was just put there.
+        // to that tab lands on what was just put there. Through
+        // `focus_handle`, which carries the zoom: a destination zoomed on
+        // another pane would otherwise draw that one and hand the
+        // keyboard to a pane nobody can see.
         if let Some(first) = landed.first() {
-            dest.focused = *first;
+            dest.focus_handle(*first);
         }
         // A pane still dialling keeps its connect screen, and that
         // screen is drawn over the TAB the progress names, so the

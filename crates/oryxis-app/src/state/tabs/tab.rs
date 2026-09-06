@@ -399,10 +399,11 @@ impl SftpTab {
     }
 }
 
-/// Persisted restore spec for a pinned tab. Stored as JSON in the
-/// `pinned_tabs` setting; on boot each becomes a dormant pinned tab that
-/// reopens lazily on first select. Cloud / ephemeral tabs have no spec and
-/// aren't persisted.
+/// Persisted restore spec for a tab. Stored as JSON in the `pinned_tabs`
+/// setting and, when restore-on-launch is on, in `open_tabs` (issue
+/// #206); on boot each becomes a dormant tab that reopens lazily on
+/// first select. Cloud / ephemeral tabs have no spec and aren't
+/// persisted.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PinnedTabSpec {
     /// A saved host, reopened with `ConnectSsh` (id resolved to an index
@@ -982,6 +983,13 @@ impl TerminalTab {
         let (pane, sibling) = self.pane_grid.close(handle)?;
         if self.focused == handle {
             self.focused = sibling;
+        }
+        // The grid forgets the zoom only when the pane that left WAS the
+        // zoomed one. A lone survivor still marked zoomed is drawn the
+        // same, but the next split would land its new pane under that
+        // zoom, focused and invisible.
+        if self.pane_count() == 1 && self.pane_grid.maximized().is_some() {
+            self.pane_grid.restore();
         }
         if !self.broadcast_capable() && self.broadcast {
             self.broadcast = false;

@@ -106,8 +106,9 @@ pub enum TerminalMessage {
     /// (issue #208). The pane-scoped counterpart of `ReconnectTab`,
     /// which is tab-wide and rebuilds a split tab's live siblings along
     /// with the dead pane. Raised by the ended-pane card's Restart
-    /// button and by the Reconnect action when the focused pane of a
-    /// split tab has ended.
+    /// button and by the pane header's; the Reconnect action on a split
+    /// tab reaches the same code directly, for whichever pane holds the
+    /// focus, ended or not.
     RestartPane(Uuid),
     /// A local pane's shell exited, reported by the child-exit signal
     /// `PtyHandle` hands out. Deliberately not driven by the output
@@ -234,6 +235,10 @@ pub enum TerminalMessage {
     /// because what happens next (confirm, tunnel a loopback callback)
     /// depends on the pane's session.
     TerminalLinkActivated(Uuid, String),
+    /// Ctrl+click activated a link in a RECORDING (the session player or
+    /// the history viewer). Remote text with no session behind it: it is
+    /// confirmed like a remote pane's link and never tunnelled.
+    TerminalLinkActivatedInRecording(String),
     /// The answer to "open this link?". `false` opens nothing.
     TerminalLinkDecision(bool),
     /// Copy the pending link's target instead of opening it. Also an

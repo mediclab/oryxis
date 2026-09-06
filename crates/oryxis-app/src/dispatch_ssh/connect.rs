@@ -989,6 +989,12 @@ impl Oryxis {
         let mut pane = crate::state::Pane::new(label, terminal);
         pane.origin = origin;
         let pane_id = pane.id;
+        // A split is a request to SEE two panes: a zoom left on the
+        // target would keep drawing it alone while the new pane took the
+        // focus out of sight.
+        if tab.pane_grid.maximized().is_some() {
+            tab.pane_grid.restore();
+        }
         let (handle, _split) = tab.pane_grid.split(axis, target, pane)?;
         tab.focused = handle;
         Some(pane_id)

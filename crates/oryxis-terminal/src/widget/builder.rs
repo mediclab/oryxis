@@ -38,7 +38,6 @@ impl<Message> TerminalView<Message> {
             on_terminal_input: None,
             on_mouse_capture_hint: None,
             on_link_click_hint: None,
-            on_link_opened: None,
             on_link_activate: None,
             focused: true,
             resize_margins: (0.0, 0.0, 0.0, 0.0),
@@ -266,16 +265,10 @@ impl<Message> TerminalView<Message> {
     /// Wire the "that link needs Ctrl + Click" hint. The callback fires
     /// when a plain click (no Ctrl, no drag) lands on a URL, so the app
     /// can show a transient toast teaching the gesture at the moment it
-    /// missed (one-time onboarding, see `on_link_opened`).
+    /// missed (one-time onboarding; the host retires the hint on the
+    /// activation it receives through [`Self::on_link_activate`]).
     pub fn on_link_click_hint(mut self, f: impl Fn() -> Message + 'static) -> Self {
         self.on_link_click_hint = Some(Box::new(f));
-        self
-    }
-
-    /// Message emitted after a Ctrl+Click opens a URL. Ignored while
-    /// [`Self::on_link_activate`] is wired, which takes over the open.
-    pub fn on_link_opened(mut self, msg: Message) -> Self {
-        self.on_link_opened = Some(msg);
         self
     }
 
@@ -285,8 +278,8 @@ impl<Message> TerminalView<Message> {
     /// The closure receives the resolved target: an allowlisted OSC 8
     /// URI, or the literal `http(s)://` token scraped from the grid
     /// (soft-wrapped rows joined). A host that wires this must open the
-    /// URL itself and retire the Ctrl+click hint the way
-    /// [`Self::on_link_opened`] would have.
+    /// URL itself and retire the Ctrl+click hint on the same message.
+    /// Unwired, the widget opens the URL itself.
     pub fn on_link_activate(mut self, f: impl Fn(String) -> Message + 'static) -> Self {
         self.on_link_activate = Some(Box::new(f));
         self
