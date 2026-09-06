@@ -897,10 +897,11 @@ async fn console_applies_the_local_umask_and_preserves_modes() {
     console.write(b"get source.txt plain.txt\r").expect("write");
     expect_output(&mut out, "source.txt", Duration::from_secs(20)).await;
     let mode = std::fs::metadata(dir.join("plain.txt")).unwrap().permissions().mode() & 0o777;
-    // No -p, so the base is the shell's 0666 and the mask takes the rest.
+    // No -p: the source's 0640 plus owner write, under the mask.
     assert_eq!(mode, 0o600, "the umask was not applied");
 
-    console.write(b"lumask 000\r").expect("write");
+    // The mask stays on: -p applies the source mode exactly, umask and
+    // all, the way sftp(1)'s fchmod does.
     console.write(b"get -p source.txt kept.txt\r").expect("write");
     expect_output(&mut out, "source.txt", Duration::from_secs(20)).await;
     let mode = std::fs::metadata(dir.join("kept.txt")).unwrap().permissions().mode() & 0o777;

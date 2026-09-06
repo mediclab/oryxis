@@ -133,9 +133,10 @@ pub struct LsOpts {
     pub human: bool,
     /// `-l`: long format.
     pub long: bool,
-    /// `-n`: with `-l`, numeric uid/gid. Accepted and ignored, because
-    /// numeric is all we can do: see the `longname` note in
-    /// [`super::render`].
+    /// `-n`: with `-l`, numeric uid/gid rather than names. Also the
+    /// cheaper listing: the names cost a second channel and a read of the
+    /// server's `longname` lines (`SftpClient::list_dir_long`), which a
+    /// numeric listing does not pay.
     pub numeric: bool,
     /// `-r`: reverse the sort.
     pub reverse: bool,
@@ -185,7 +186,9 @@ pub enum ParseError {
     /// A flag the command does not accept.
     UnknownFlag { command: &'static str, flag: char },
     /// `chmod`'s mode or `lumask`'s mask did not parse as octal.
-    BadMode(String),
+    /// The command (`chmod` / `lumask`) and the operand that is not an
+    /// octal mode it accepts.
+    BadMode(&'static str, String),
     /// `chown` / `chgrp` were given something that is not a numeric id.
     BadOwner(String),
 }
@@ -203,7 +206,7 @@ impl std::fmt::Display for ParseError {
             ParseError::UnknownFlag { command, flag } => {
                 write!(f, "{command}: unknown option -- {flag}")
             }
-            ParseError::BadMode(m) => write!(f, "chmod: invalid mode: {m}"),
+            ParseError::BadMode(c, m) => write!(f, "{c}: invalid mode: {m}"),
             // Naming the protocol limit rather than just refusing: the
             // obvious next thing to type is a user NAME, and there is no
             // way for the client to resolve one.
@@ -500,7 +503,7 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
             if operands.len() < 2 {
                 return Err(ParseError::MissingOperand("chmod"));
             }
-            let mode = parse_octal(&operands[0], 0o7777)?;
+            let mode = parse_octal("chmod", &operands[0], 0o7777)?;
             Ok(Command::Chmod {
                 mode,
                 paths: operands[1..].to_vec(),
@@ -609,7 +612,7 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
         }
         "lumask" => {
             let raw = exactly_one(&rest, "lumask")?;
-            Ok(Command::Lumask(parse_octal(&raw, 0o777)?))
+            Ok(Command::Lumask(parse_octal("lumask", &raw, 0o777)?))
         }
         "progress" => Ok(Command::Progress),
         "help" | "?" => Ok(Command::Help),
@@ -654,10 +657,11 @@ fn parse_nofollow(rest: &[&str], cmd: &'static str) -> Result<(bool, Vec<String>
 /// A decimal-looking mode is the classic mistake and `999` is not octal
 /// at all. The width check matters just as much: masking `77777` into
 /// something valid would change permissions the user never asked for.
-fn parse_octal(raw: &str, max: u32) -> Result<u32, ParseError> {
-    let value = u32::from_str_radix(raw, 8).map_err(|_| ParseError::BadMode(raw.to_string()))?;
+fn parse_octal(command: &'static str, raw: &str, max: u32) -> Result<u32, ParseError> {
+    let value = u32::from_str_radix(raw, 8)
+        .map_err(|_| ParseError::BadMode(command, raw.to_string()))?;
     if value > max {
-        return Err(ParseError::BadMode(raw.to_string()));
+        return Err(ParseError::BadMode(command, raw.to_string()));
     }
     Ok(value)
 }
@@ -1225,8 +1229,8 @@ mod tests {
         assert_eq!(ok("lumask 22"), Command::Lumask(0o022));
         // A mask is three octal digits; anything wider is a typo that
         // would otherwise be masked into something valid.
-        assert_eq!(parse("lumask 7777"), Err(ParseError::BadMode("7777".into())));
-        assert_eq!(parse("lumask 9"), Err(ParseError::BadMode("9".into())));
+        assert_eq!(parse("lumask 7777"), Err(ParseError::BadMode("lumask", "7777".into())));
+        assert_eq!(parse("lumask 9"), Err(ParseError::BadMode("lumask", "9".into())));
     }
 
     /// A decimal-looking mode is the classic mistake, and `999` is not
@@ -1234,11 +1238,11 @@ mod tests {
     /// that changes permissions the user did not ask for.
     #[test]
     fn chmod_rejects_a_mode_that_is_not_octal() {
-        assert_eq!(parse("chmod 999 f"), Err(ParseError::BadMode("999".into())));
-        assert_eq!(parse("chmod rwx f"), Err(ParseError::BadMode("rwx".into())));
+        assert_eq!(parse("chmod 999 f"), Err(ParseError::BadMode("chmod", "999".into())));
+        assert_eq!(parse("chmod rwx f"), Err(ParseError::BadMode("chmod", "rwx".into())));
         assert_eq!(
             parse("chmod 77777 f"),
-            Err(ParseError::BadMode("77777".into()))
+            Err(ParseError::BadMode("chmod", "77777".into()))
         );
         assert_eq!(parse("chmod 644"), Err(ParseError::MissingOperand("chmod")));
     }

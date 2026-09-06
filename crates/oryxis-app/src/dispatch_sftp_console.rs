@@ -358,12 +358,11 @@ impl Oryxis {
             .map(|p| p.label.clone())
             .unwrap_or_else(|| "host".to_string());
         let start_dir = self.pending_console_dir.take();
-        let local_cwd = std::env::current_dir().unwrap_or_else(|_| {
-            std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-        });
+        // The local side starts where every other SFTP surface puts a
+        // download (Settings > SFTP), not in the process's working
+        // directory: a system install launched from a menu sits in
+        // Program Files or `/`, where the first `get` fails.
+        let local_cwd = self.default_download_dir();
 
         let stream = iced::stream::channel::<Message>(
             128,

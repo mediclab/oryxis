@@ -30,6 +30,10 @@ getrandom = "0.4"
 # `get -p` / `put -p` preserve modification times, and std has no way to
 # SET one. Already in the lock as a transitive, so this adds no weight.
 filetime = "0.2"
+# `lcd` canonicalizes the directory it lands in, and on Windows std's
+# answer is a `\\?\` verbatim path that `lpwd` would print and `lcd ..`
+# could not walk. Already in the lock as a transitive.
+dunce = "1"
 
 # Enumerate the named-pipe namespace to discover Pageant/KeePassXC's
 # per-launch agent pipe (windows_agent_pipe). Windows-only.

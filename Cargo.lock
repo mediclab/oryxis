@@ -5652,6 +5652,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "dirs",
+ "dunce",
  "encoding_rs",
  "filetime",
  "getrandom 0.4.3",

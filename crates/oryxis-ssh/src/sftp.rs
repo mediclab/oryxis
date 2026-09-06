@@ -54,6 +54,20 @@ pub struct SftpEntry {
 /// second copy, because two predicates guarding one threat drift, and
 /// the one that drifts is the one nobody is looking at.
 pub fn is_safe_entry_name(name: &str) -> bool {
+    is_safe_entry_name_on(name, cfg!(windows))
+}
+
+/// [`is_safe_entry_name`] with the platform named, so the Windows rules
+/// are testable on the Linux runner CI has.
+///
+/// Windows adds two shapes that are ordinary file names anywhere else.
+/// A reserved device name (`CON`, `NUL`, `COM1`, with or without an
+/// extension) opens the DEVICE rather than a file, so a download named
+/// `nul` writes nothing and one named `con` writes to the console. A
+/// trailing dot or space is stripped by the Win32 layer, so the file
+/// lands under a name other than the one that was checked. Both are
+/// refused on Windows only: `CON` is a legal name on unix.
+pub fn is_safe_entry_name_on(name: &str, windows: bool) -> bool {
     if name.is_empty() || name == "." || name == ".." {
         return false;
     }
@@ -65,7 +79,31 @@ pub fn is_safe_entry_name(name: &str) -> bool {
     if name.as_bytes().get(1) == Some(&b':') {
         return false;
     }
+    if windows {
+        if name.ends_with('.') || name.ends_with(' ') {
+            return false;
+        }
+        // The device name is the stem before the first dot, and Win32
+        // ignores trailing spaces on it too (`CON .txt` is still CON).
+        let stem = name.split('.').next().unwrap_or(name).trim_end();
+        if is_windows_device_name(stem) {
+            return false;
+        }
+    }
     true
+}
+
+/// The names Win32 reserves for devices, case-insensitively: `CON`,
+/// `PRN`, `AUX`, `NUL`, and `COM0`..`COM9` / `LPT0`..`LPT9`.
+fn is_windows_device_name(stem: &str) -> bool {
+    let upper = stem.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    let bytes = upper.as_bytes();
+    bytes.len() == 4
+        && (upper.starts_with("COM") || upper.starts_with("LPT"))
+        && bytes[3].is_ascii_digit()
 }
 
 /// Destination-side policy for [`SftpClient::upload_from_options`].
@@ -730,6 +768,28 @@ impl SftpClient {
         size_hint: Option<u64>,
         progress: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     ) -> Result<(), SshError> {
+        self.download_to_progress_with(remote, local, size_hint, progress, false)
+            .await
+    }
+
+    /// [`download_to_progress`](Self::download_to_progress) with the
+    /// resume decision in the caller's hands.
+    ///
+    /// `force_resume` asks for the tail-verified resume attempt whatever
+    /// the file's size. The automatic rule skips it below
+    /// `STREAM_THRESHOLD` because the verification round trip costs more
+    /// than the bytes it saves, and that is the right default for a
+    /// transfer nobody asked to resume. The SFTP console's `reget` and
+    /// `get -a` ARE that ask, and a user who typed them expects the
+    /// partial to be continued, not re-sent because it was small.
+    pub async fn download_to_progress_with(
+        &self,
+        remote: &str,
+        local: &std::path::Path,
+        size_hint: Option<u64>,
+        progress: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+        force_resume: bool,
+    ) -> Result<(), SshError> {
         let label = format!("download({remote})");
         let size = match size_hint {
             Some(s) => s,
@@ -740,8 +800,9 @@ impl SftpClient {
         // Resume is attempted only on the windowed path. Below the
         // threshold the verification round trip costs more than re-sending
         // the bytes it would save, and this decision is automatic, so it
-        // should never spend a round trip it cannot repay.
-        let resume_from = if size >= STREAM_THRESHOLD {
+        // should never spend a round trip it cannot repay. A caller that
+        // asked for the resume by name pays it knowingly.
+        let resume_from = if force_resume || size >= STREAM_THRESHOLD {
             match tokio::fs::metadata(&part).await {
                 Ok(m) if m.len() > 0 => {
                     let have = resume_offset(size, m.len());
@@ -769,7 +830,10 @@ impl SftpClient {
             p.fetch_add(resume_from, std::sync::atomic::Ordering::Relaxed);
         }
 
-        if size < STREAM_THRESHOLD {
+        // A small file with a verified partial takes the windowed path
+        // too: the sequential pump below starts from zero by construction
+        // (`create` truncates), so it cannot honour a resume.
+        if size < STREAM_THRESHOLD && resume_from == 0 {
             let remote_file = self
                 .with_op_timeout(&label, async {
                     let s = self.inner.lock().await;
@@ -1787,8 +1851,19 @@ impl SftpClient {
         loop {
             let data = match raw.read(src.to_string(), offset, CHUNK).await {
                 Ok(d) => d.data,
-                // EOF is reported as a status, not as an empty read.
-                Err(_) => break,
+                // EOF is reported as a status, not as an empty read, and
+                // it is the ONLY status that ends the loop. Any other
+                // failure is a copy that stopped short, and calling that
+                // done would leave a truncated file under the destination
+                // name with nothing said about it.
+                Err(russh_sftp::client::error::Error::Status(s))
+                    if s.status_code == StatusCode::Eof =>
+                {
+                    break;
+                }
+                Err(e) => {
+                    return Err(SshError::Channel(format!("sftp copy read({from}): {e}")));
+                }
             };
             if data.is_empty() {
                 break;
@@ -1798,13 +1873,6 @@ impl SftpClient {
                 .await
                 .map_err(|e| SshError::Channel(format!("sftp copy write({to}): {e}")))?;
             offset += len;
-        }
-        if offset == 0 {
-            // An empty source is a legitimate copy, but so is a read that
-            // failed on its first request. Tell them apart by asking.
-            raw.fstat(src.to_string())
-                .await
-                .map_err(|e| SshError::Channel(format!("sftp copy read({from}): {e}")))?;
         }
         Ok(())
     }
@@ -3338,7 +3406,7 @@ mod resume_offset_tests {
 
 #[cfg(test)]
 mod entry_name_tests {
-    use super::is_safe_entry_name;
+    use super::{is_safe_entry_name, is_safe_entry_name_on};
 
     /// Every shape a hostile listing can use to escape the directory the
     /// user picked. The two Windows forms are the ones a `/`-only split
@@ -3365,6 +3433,23 @@ mod entry_name_tests {
         // remote file named that way is not worth the ambiguity.
         for good in ["file.txt", "..leading-dots", "école", "with space", "a.b:c"] {
             assert!(is_safe_entry_name(good), "rejected {good:?}");
+        }
+    }
+
+    /// The Windows-only shapes: a device name opens the device, a
+    /// trailing dot or space is stripped by Win32 so the file lands under
+    /// a name other than the one checked. Legal everywhere else.
+    #[test]
+    fn windows_device_names_and_trailing_junk_are_refused_there_only() {
+        for bad in [
+            "CON", "con", "nul", "NUL.txt", "Con .log", "com1", "COM9.dat", "LPT3", "AUX",
+            "PRN.tar.gz", "trailing.", "trailing ",
+        ] {
+            assert!(!is_safe_entry_name_on(bad, true), "accepted on windows {bad:?}");
+            assert!(is_safe_entry_name_on(bad, false), "refused on unix {bad:?}");
+        }
+        for good in ["CONSOLE", "com", "COM10", "lpt", "nul-file", "aux-log", "prn_"] {
+            assert!(is_safe_entry_name_on(good, true), "refused on windows {good:?}");
         }
     }
 }

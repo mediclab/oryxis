@@ -195,6 +195,17 @@ struct Repl {
     label: String,
 }
 
+/// One thing the editor handed the REPL to act on, in the order it was
+/// typed.
+#[derive(Debug, PartialEq, Eq)]
+enum Pending {
+    /// A submitted line, to be parsed and run.
+    Line(String),
+    /// Ctrl+D on an empty line: the console ends once everything queued
+    /// ahead of it has run.
+    Eof,
+}
+
 impl Repl {
     async fn run(self) {
         let Repl {
@@ -217,51 +228,47 @@ impl Repl {
         );
         emit_prompt(&out, &editor);
 
-        loop {
+        // Lines waiting to run. One input chunk can carry several (a
+        // paste of `cd x\nget y\n` arrives whole), and each has to run in
+        // turn rather than the last one winning. Ctrl+D rides the same
+        // queue so a paste that ends in one runs before the console goes.
+        let mut queue: std::collections::VecDeque<Pending> = std::collections::VecDeque::new();
+        'repl: loop {
             // ---- IDLE ---------------------------------------------------
-            let line = tokio::select! {
-                chunk = input_rx.recv() => {
-                    let Some(chunk) = chunk else { break };
-                    let (echo, events) = editor.feed(&chunk);
-                    emit_bytes(&out, &echo);
-                    let mut submitted = None;
-                    let mut reprompt = false;
-                    for event in events {
-                        match event {
-                            LineEvent::Submitted(line) => submitted = Some(line),
-                            LineEvent::Eof => {
-                                emit_bytes(&out, b"\r\n");
-                                break;
-                            }
-                            // Ctrl+C at the prompt: the editor painted
-                            // the `^C` and abandoned the line, and what
-                            // replaces it is a NEW prompt, so it goes
-                            // out marked like every other one.
-                            LineEvent::Interrupted => reprompt = true,
-                            LineEvent::CompleteRequested { line, cursor } => {
-                                let bytes =
-                                    complete(&line, cursor, &client, &state, &mut editor).await;
-                                emit_bytes(&out, &bytes);
-                            }
+            let line = loop {
+                match queue.pop_front() {
+                    Some(Pending::Line(line)) => break line,
+                    Some(Pending::Eof) => break 'repl,
+                    None => {}
+                }
+                tokio::select! {
+                    chunk = input_rx.recv() => {
+                        let Some(chunk) = chunk else { break 'repl };
+                        let (echo, events) = editor.feed(&chunk);
+                        emit_bytes(&out, &echo);
+                        let (reprompt, eof, completions) = queue_line_events(events, &mut queue);
+                        // Ctrl+D leaves the cursor after the prompt; the
+                        // console's last word starts on a line of its own.
+                        if eof {
+                            emit_bytes(&out, b"\r\n");
+                        }
+                        for (line, cursor) in completions {
+                            let bytes = complete(&line, cursor, &client, &state, &mut editor).await;
+                            emit_bytes(&out, &bytes);
+                        }
+                        if reprompt {
+                            emit_prompt(&out, &editor);
                         }
                     }
-                    if reprompt {
-                        emit_prompt(&out, &editor);
+                    Some((cols, rows)) = resize_rx.recv() => {
+                        let _ = rows;
+                        state.cols = cols.max(1);
+                        editor.set_cols(state.cols);
+                        // Repaint at the new geometry: the line the user is
+                        // typing was drawn against the old width and would
+                        // otherwise be wrong until they touched a key.
+                        emit_bytes(&out, &editor.redraw());
                     }
-                    match submitted {
-                        Some(line) => line,
-                        None => continue,
-                    }
-                }
-                Some((cols, rows)) = resize_rx.recv() => {
-                    let _ = rows;
-                    state.cols = cols.max(1);
-                    editor.set_cols(state.cols);
-                    // Repaint at the new geometry: the line the user is
-                    // typing was drawn against the old width and would
-                    // otherwise be wrong until they touched a key.
-                    emit_bytes(&out, &editor.redraw());
-                    continue;
                 }
             };
 
@@ -352,6 +359,38 @@ impl Repl {
 /// the same line and is not a new prompt; emitting the pair on every
 /// keystroke would tell a reader that a command started and ended
 /// between two characters.
+/// Sort one chunk's editor events into the run queue, in the order they
+/// were typed. Answers whether a fresh prompt is owed (Ctrl+C: the
+/// editor painted the `^C` and abandoned the line, and what replaces it
+/// is a NEW prompt, so it goes out marked like every other one), whether
+/// a Ctrl+D was queued, and hands back the completion requests, which
+/// need the client and are answered by the caller.
+///
+/// Pure, so the property it exists for is testable without a session: a
+/// paste that submits several lines queues EVERY one of them, and a
+/// Ctrl+D lands behind whatever preceded it rather than ending the
+/// console before those lines ran.
+fn queue_line_events(
+    events: Vec<LineEvent>,
+    queue: &mut std::collections::VecDeque<Pending>,
+) -> (bool, bool, Vec<(String, usize)>) {
+    let mut reprompt = false;
+    let mut eof = false;
+    let mut completions = Vec::new();
+    for event in events {
+        match event {
+            LineEvent::Submitted(line) => queue.push_back(Pending::Line(line)),
+            LineEvent::Eof => {
+                eof = true;
+                queue.push_back(Pending::Eof);
+            }
+            LineEvent::Interrupted => reprompt = true,
+            LineEvent::CompleteRequested { line, cursor } => completions.push((line, cursor)),
+        }
+    }
+    (reprompt, eof, completions)
+}
+
 fn emit_prompt(out: &mpsc::UnboundedSender<Vec<u8>>, editor: &LineEditor) {
     let mut bytes = render::marks::PROMPT_START.as_bytes().to_vec();
     bytes.extend_from_slice(&editor.redraw_fresh());
@@ -393,11 +432,10 @@ where
                 let Some(chunk) = chunk else { break None };
                 if chunk.contains(&0x03) {
                     // Dropping the future cancels the transfer at its
-                    // next await. The partial file it leaves is the
-                    // caller's to sweep; `SftpClient` has
-                    // `discard_download_scratch` for exactly this, and
-                    // the resume machinery is what makes keeping it
-                    // worthwhile.
+                    // next await. The scratch file it leaves is KEPT on
+                    // purpose: it is what a later `get` (or `reget`)
+                    // resumes from, after checking its tail still matches
+                    // the server's. See `SftpClient::download_to`.
                     break None;
                 }
                 // Everything else typed during a command is discarded,
@@ -473,6 +511,14 @@ async fn complete(
             entries
         }
     };
+    // A name carrying a control character is neither listed nor
+    // inserted. Listed, it would reach the terminal raw (a Tab list is
+    // painted from the names, not through the sanitized listing) and
+    // could clear the screen or write the clipboard through OSC 52;
+    // inserted, it would sit in the editor's buffer and be echoed on
+    // every repaint. Nobody can type such a name either, so nothing is
+    // lost by refusing to complete it.
+    candidates.retain(|c| !c.name.chars().any(char::is_control));
     // The server answers in its own order and a directory read answers in
     // the filesystem's; a candidate list is read by eye, so it is sorted.
     candidates.sort_by(|a, b| a.name.cmp(&b.name));
@@ -714,5 +760,28 @@ mod tests {
     async fn an_unreadable_local_directory_yields_no_candidates() {
         let missing = std::env::temp_dir().join("oryxis-complete-does-not-exist");
         assert!(local_candidates(&missing).await.is_err());
+    }
+
+    /// A paste of several lines runs EVERY line, in order, and a Ctrl+D
+    /// at its end runs behind them. The REPL used to keep only the last
+    /// `Submitted` of a chunk and to answer `Eof` by leaving the event
+    /// loop rather than the console.
+    #[test]
+    fn a_paste_queues_every_line_and_the_eof_behind_them() {
+        let mut editor = LineEditor::new(PROMPT, 80);
+        let (_, events) = editor.feed(b"cd x\nget y\n\x04");
+        let mut queue = std::collections::VecDeque::new();
+        let (reprompt, eof, completions) = queue_line_events(events, &mut queue);
+        assert!(!reprompt);
+        assert!(eof);
+        assert!(completions.is_empty());
+        assert_eq!(
+            queue.into_iter().collect::<Vec<_>>(),
+            vec![
+                Pending::Line("cd x".into()),
+                Pending::Line("get y".into()),
+                Pending::Eof,
+            ]
+        );
     }
 }
