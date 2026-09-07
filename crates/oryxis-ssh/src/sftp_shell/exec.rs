@@ -419,18 +419,17 @@ async fn ls(
         && stat.permissions.is_some_and(|m| m & 0o040000 == 0)
     {
         let name = dir.rsplit('/').next().unwrap_or(&dir).to_string();
-        // A long listing of ONE file still shows the owner by name, or
-        // `ls -l x` and `ls -l` would disagree about who owns `x` on the
-        // same screen. The name only exists in a DIRECTORY listing, so
-        // the parent is read to find it; a stat has no such line.
+        // A long listing of ONE file names the owner through the
+        // `users-groups-by-id` extension when the server has it, and
+        // shows the ids otherwise, which is `sftp(1)`'s own answer: a
+        // stat carries only ids, and the names exist elsewhere only in a
+        // directory listing's longname, so reading the whole parent to
+        // name one file is the wrong price for it.
         let named = if opts.long && !opts.numeric {
-            let parent = dir.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
-            let parent = if parent.is_empty() { "/" } else { parent };
-            client
-                .list_dir_long(parent)
-                .await
-                .ok()
-                .and_then(|entries| entries.into_iter().find(|e| e.name == name))
+            match (stat.uid, stat.gid) {
+                (Some(uid), Some(gid)) => client.owner_names(uid, gid).await.ok().flatten(),
+                _ => None,
+            }
         } else {
             None
         };
@@ -444,8 +443,8 @@ async fn ls(
             .and_then(|s| s.permissions)
             .is_some_and(|m| m & 0o170000 == 0o120000);
         let entry = SftpEntry {
-            owner: named.as_ref().and_then(|e| e.owner.clone()),
-            group: named.as_ref().and_then(|e| e.group.clone()),
+            owner: named.as_ref().and_then(|(owner, _)| owner.clone()),
+            group: named.as_ref().and_then(|(_, group)| group.clone()),
             name,
             is_dir: false,
             is_symlink,

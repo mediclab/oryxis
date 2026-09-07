@@ -132,6 +132,60 @@ pub struct UploadOptions {
     pub fsync: bool,
 }
 
+/// The OpenSSH extension that names users and groups by id.
+const USERS_GROUPS_BY_ID: &str = "users-groups-by-id@openssh.com";
+
+/// Encode a `users-groups-by-id@openssh.com` request body: two strings,
+/// each holding the packed big-endian `uint32` ids it asks about.
+fn encode_users_groups_by_id(uids: &[u32], gids: &[u32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + 4 * (uids.len() + gids.len()));
+    for ids in [uids, gids] {
+        out.extend_from_slice(&(4 * ids.len() as u32).to_be_bytes());
+        for id in ids {
+            out.extend_from_slice(&id.to_be_bytes());
+        }
+    }
+    out
+}
+
+/// One name per id asked, in the order asked; `None` where the server
+/// could not resolve the id.
+type NameList = Vec<Option<String>>;
+
+/// Decode a `users-groups-by-id@openssh.com` reply body: two strings,
+/// each a packed list of length-prefixed names, one per id asked, in the
+/// order asked. An empty name is the server saying it could not resolve
+/// that id, and reads as `None`. Anything not shaped like that is `None`
+/// as a whole.
+fn parse_users_groups_by_id(data: &[u8]) -> Option<(NameList, NameList)> {
+    fn take_string<'a>(cur: &mut &'a [u8]) -> Option<&'a [u8]> {
+        let (len, rest) = cur.split_first_chunk::<4>()?;
+        let len = u32::from_be_bytes(*len) as usize;
+        let (string, rest) = rest.split_at_checked(len)?;
+        *cur = rest;
+        Some(string)
+    }
+    fn names(mut list: &[u8]) -> Option<NameList> {
+        let mut out = Vec::new();
+        while !list.is_empty() {
+            let name = take_string(&mut list)?;
+            out.push(if name.is_empty() {
+                None
+            } else {
+                Some(String::from_utf8_lossy(name).into_owned())
+            });
+        }
+        Some(out)
+    }
+    let mut cur = data;
+    let users = names(take_string(&mut cur)?)?;
+    let groups = names(take_string(&mut cur)?)?;
+    if !cur.is_empty() {
+        return None;
+    }
+    Some((users, groups))
+}
+
 /// Pull the owner and group out of an SFTP v3 `longname` line.
 ///
 /// The line is explicitly unspecified by the protocol ("human readable"),
@@ -1922,6 +1976,15 @@ impl SftpClient {
     /// read/write length uncapped, so the 255 KiB per-request chunk is
     /// safe without negotiating the `limits@openssh.com` extension.
     async fn open_raw_streaming(&self) -> Result<Arc<RawSftpSession>, SshError> {
+        self.open_raw_session().await.map(|(raw, _)| raw)
+    }
+
+    /// [`Self::open_raw_streaming`] plus the extensions the server
+    /// advertised in its VERSION hello (name to version string), for the
+    /// requests that must ask before they speak.
+    async fn open_raw_session(
+        &self,
+    ) -> Result<(Arc<RawSftpSession>, std::collections::HashMap<String, String>), SshError> {
         let timeout = self.open_timeout;
         let op_secs = self.current_op_timeout().as_secs().max(10);
         let inner = async {
@@ -1939,18 +2002,64 @@ impl SftpClient {
             // op timeout so a single 255 KiB request on a slow link isn't
             // killed by the library's 10s default.
             raw.set_timeout(op_secs);
-            raw.init()
+            let version = raw
+                .init()
                 .await
                 .map_err(|e| SshError::Channel(format!("sftp raw init: {e}")))?;
-            Ok::<_, SshError>(raw)
+            Ok::<_, SshError>((raw, version.extensions))
         };
-        let raw = tokio::time::timeout(timeout, inner).await.map_err(|_| {
+        let (raw, extensions) = tokio::time::timeout(timeout, inner).await.map_err(|_| {
             SshError::Channel(format!(
                 "sftp raw open timed out after {}s",
                 timeout.as_secs()
             ))
         })??;
-        Ok(Arc::new(raw))
+        Ok((Arc::new(raw), extensions))
+    }
+
+    /// Owner and group NAMES for one uid/gid pair, through the
+    /// `users-groups-by-id@openssh.com` extension (OpenSSH 8.7 and later
+    /// advertise it as version "1").
+    ///
+    /// `Ok(None)` when the server does not offer it, which is the
+    /// caller's cue to show the numbers, the way `sftp(1)` does: an SFTP
+    /// v3 `stat` carries only ids, and the names exist elsewhere only in
+    /// a directory listing's `longname`, so reading a whole directory to
+    /// name one file is the wrong price. An id the server could not
+    /// resolve comes back as `None` inside the pair (the protocol's empty
+    /// string), and a reply that is not shaped like the specification is
+    /// an error rather than a guess.
+    pub async fn owner_names(
+        &self,
+        uid: u32,
+        gid: u32,
+    ) -> Result<Option<(Option<String>, Option<String>)>, SshError> {
+        let (raw, extensions) = self.open_raw_session().await?;
+        if extensions.get(USERS_GROUPS_BY_ID).map(String::as_str) != Some("1") {
+            return Ok(None);
+        }
+        let reply = self
+            .with_op_timeout(USERS_GROUPS_BY_ID, async {
+                raw.extended(USERS_GROUPS_BY_ID, encode_users_groups_by_id(&[uid], &[gid]))
+                    .await
+                    .map_err(|e| SshError::Channel(format!("sftp {USERS_GROUPS_BY_ID}: {e}")))
+            })
+            .await?;
+        let data = match reply {
+            Packet::ExtendedReply(reply) => reply.data,
+            other => {
+                return Err(SshError::Channel(format!(
+                    "sftp {USERS_GROUPS_BY_ID}: unexpected reply {other:?}"
+                )));
+            }
+        };
+        let (users, groups) = parse_users_groups_by_id(&data).ok_or_else(|| {
+            SshError::Channel(format!("sftp {USERS_GROUPS_BY_ID}: malformed reply"))
+        })?;
+        Ok(Some((
+            users.into_iter().next().flatten(),
+            groups.into_iter().next().flatten(),
+        )))
     }
 
     /// Run a one-shot command on a fresh exec channel. Multiplexed onto
@@ -2610,13 +2719,56 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_attrs_v3, parse_longname_owner, pump_bytes, windowed_download_copy,
+        encode_attrs_v3, encode_users_groups_by_id, parse_longname_owner, parse_users_groups_by_id,
+        pump_bytes, windowed_download_copy,
         windowed_relay_copy, windowed_upload_copy, AttrUpdate, FsInfo, SshError,
     };
     use std::sync::{Arc, Mutex};
 
     /// The line OpenSSH's server sends, and the two fields worth reading
     /// out of it.
+    /// The extension's two bodies, both ways: ids go out packed in two
+    /// strings, names come back one per id, and an empty name is the
+    /// server's "I could not resolve this one".
+    #[test]
+    fn users_groups_by_id_round_trips_and_reads_an_empty_name_as_unknown() {
+        assert_eq!(
+            encode_users_groups_by_id(&[1000, 0], &[1000]),
+            [
+                0, 0, 0, 8, 0, 0, 3, 232, 0, 0, 0, 0, // uids: 1000, 0
+                0, 0, 0, 4, 0, 0, 3, 232, // gids: 1000
+            ]
+        );
+        let mut reply = Vec::new();
+        let users = [b"wilson".as_slice(), b"".as_slice()];
+        let mut packed = Vec::new();
+        for u in users {
+            packed.extend_from_slice(&(u.len() as u32).to_be_bytes());
+            packed.extend_from_slice(u);
+        }
+        reply.extend_from_slice(&(packed.len() as u32).to_be_bytes());
+        reply.extend_from_slice(&packed);
+        let group = b"staff";
+        reply.extend_from_slice(&(4 + group.len() as u32).to_be_bytes());
+        reply.extend_from_slice(&(group.len() as u32).to_be_bytes());
+        reply.extend_from_slice(group);
+        assert_eq!(
+            parse_users_groups_by_id(&reply),
+            Some((vec![Some("wilson".to_string()), None], vec![Some("staff".to_string())]))
+        );
+        // Empty sets are legal on either side.
+        assert_eq!(
+            parse_users_groups_by_id(&[0, 0, 0, 0, 0, 0, 0, 0]),
+            Some((Vec::new(), Vec::new()))
+        );
+        // A truncated or trailing body is refused, never read partially.
+        assert_eq!(parse_users_groups_by_id(&reply[..reply.len() - 1]), None);
+        let mut trailing = reply.clone();
+        trailing.push(0);
+        assert_eq!(parse_users_groups_by_id(&trailing), None);
+        assert_eq!(parse_users_groups_by_id(&[0, 0, 0, 9, 1]), None);
+    }
+
     #[test]
     fn a_longname_yields_the_owner_and_group() {
         assert_eq!(
