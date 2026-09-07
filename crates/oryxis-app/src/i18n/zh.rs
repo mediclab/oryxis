@@ -2024,6 +2024,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_file_desc" => "会话进行时把录制内容同步写入文本文件，便于在别处跟踪或交给他人。该文件不加密，与保险库中的录制不同。",
         "session_log_file_stopped" => "无法写入文本文件，本次会话的同步写入已关闭。保险库中的录制仍在继续。",
         "sftp_link_down" => "连接已断开。会话重新连接后文件会恢复。",
+        "session_log_folder_title" => "会话日志文件夹",
         "connection_history" => "连接历史",
         "setting_connection_history_desc" => "将连接事件（连接、断开、认证失败、错误）记录到保险库。",
         "session_log_default" => "默认",

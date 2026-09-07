@@ -755,6 +755,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_file_desc" => "Zrcadlí záznam do textového souboru už během relace, abyste ho mohli sledovat jinde nebo někomu předat. Tento soubor není šifrovaný, na rozdíl od záznamu v trezoru.",
         "session_log_file_stopped" => "Textový soubor se nepodařilo zapsat; zrcadlení je pro tuto relaci vypnuto. Záznam v trezoru pokračuje.",
         "sftp_link_down" => "Spojení bylo ztraceno. Soubory se vrátí, až se relace znovu připojí.",
+        "session_log_folder_title" => "Složka záznamů relací",
         "connection_history" => "Historie připojení",
         "setting_connection_history_desc" => "Zaznamenává události připojení (připojení, odpojení, selhání ověření, chyby) do trezoru.",
         "session_log_default" => "Výchozí",

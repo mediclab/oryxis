@@ -182,7 +182,11 @@ impl Oryxis {
     /// clears the row on its way out, so a user who never asked for this
     /// has no list of their hosts sitting next to a locked vault.
     pub(crate) fn persist_open_tabs(&self) {
-        if !self.prefs.restore_tabs_on_launch {
+        // A child window (`--inherit-vault`) never writes the row: it
+        // shares the setting with the window that spawned it, and its own
+        // strip would replace the parent's on the way out. The same gate
+        // the reader (`restore_open_tabs_dormant`) applies.
+        if !self.prefs.restore_tabs_on_launch || crate::app::AUTO_PASSWORD.get().is_some() {
             return;
         }
         let mut specs: Vec<crate::state::PinnedTabSpec> = Vec::new();
@@ -230,7 +234,11 @@ impl Oryxis {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        if !self.prefs.restore_tabs_on_launch {
+        // A child window (`--inherit-vault`) never writes the row: it
+        // shares the setting with the window that spawned it, and its own
+        // strip would replace the parent's on the way out. The same gate
+        // the reader (`restore_open_tabs_dormant`) applies.
+        if !self.prefs.restore_tabs_on_launch || crate::app::AUTO_PASSWORD.get().is_some() {
             return;
         }
         let mut h = DefaultHasher::new();

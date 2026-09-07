@@ -736,6 +736,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_file_desc" => "Sao bản ghi sang một tệp văn bản ngay trong lúc phiên đang chạy, để theo dõi ở nơi khác hoặc đưa cho người khác. Tệp đó không được mã hóa, khác với bản ghi trong két.",
         "session_log_file_stopped" => "Không ghi được tệp văn bản; bản sao đã tắt cho phiên này. Bản ghi trong kho vẫn tiếp tục.",
         "sftp_link_down" => "Mất kết nối. Tệp sẽ trở lại khi phiên kết nối lại.",
+        "session_log_folder_title" => "Thư mục nhật ký phiên",
         "connection_history" => "Lịch sử kết nối",
         "setting_connection_history_desc" => "Ghi các sự kiện kết nối (kết nối, ngắt kết nối, lỗi xác thực, lỗi) vào kho.",
         "session_log_default" => "Mặc định",

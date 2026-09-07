@@ -136,6 +136,10 @@ impl Oryxis {
                     // time. Refresh that copy from the verified input so
                     // the embed can't go stale.
                     self.mcp.include_vault_password = true;
+                    // The one Show governs the token AND the password it
+                    // now embeds, and the user asked to embed it, not to
+                    // see it: same rule as the regenerate arm.
+                    self.mcp.token_visible = false;
                     self.persist_setting("mcp_config_vault_pw", "true");
                     self.master_password = Some(typed);
                     self.mcp.vault_pw_prompt = None;

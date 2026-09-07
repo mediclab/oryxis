@@ -639,7 +639,7 @@ vulnerability disclosure policy.
 
 ## Themes & internationalization
 
-- **13 global themes plus custom UI schemes.** Switch the entire UI
+- **14 global themes plus custom UI schemes.** Switch the entire UI
   instantly, or build your own (21 colors) with a built-in graphical color
   picker and live preview. Both the UI and the terminal pickers open
   into full gallery modals with live previews instead of cramped grids.

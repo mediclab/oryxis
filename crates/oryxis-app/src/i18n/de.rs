@@ -2011,6 +2011,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_file_desc" => "Spiegelt die Aufzeichnung während der Sitzung in eine Textdatei, zum Mitlesen anderswo oder zum Weitergeben. Diese Datei ist nicht verschlüsselt, anders als die Aufzeichnung im Tresor.",
         "session_log_file_stopped" => "Die Textdatei konnte nicht geschrieben werden; die Spiegelung ist für diese Sitzung aus. Die Aufzeichnung im Tresor läuft weiter.",
         "sftp_link_down" => "Verbindung verloren. Die Dateien sind wieder da, sobald die Sitzung neu verbindet.",
+        "session_log_folder_title" => "Ordner für Sitzungsprotokolle",
         "connection_history" => "Verbindungsverlauf",
         "setting_connection_history_desc" => "Zeichnet Verbindungsereignisse (Verbindungen, Trennungen, Authentifizierungsfehler, Fehler) im Tresor auf.",
         "session_log_default" => "Standard",

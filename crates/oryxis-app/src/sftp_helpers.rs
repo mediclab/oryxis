@@ -278,9 +278,16 @@ pub(crate) fn walk_remote_for_download<'a>(
     Box::pin(async move {
         let entries = client.list_dir(src).await.map_err(|e| e.to_string())?;
         for entry in entries {
+            // The same answer the top level gives a refused name: the
+            // batch stops and says which name, rather than landing a
+            // folder with a file silently missing from it.
             if !is_safe_remote_entry_name(&entry.name) {
-                tracing::warn!("sftp download: skipping unsafe entry name {:?} in {src}", entry.name);
-                continue;
+                tracing::warn!("sftp download: unsafe entry name {:?} in {src}", entry.name);
+                return Err(format!(
+                    "{} ({})",
+                    crate::i18n::t("sftp_unsafe_entry_name"),
+                    entry.name
+                ));
             }
             let child_src = if src == "/" {
                 format!("/{}", entry.name)

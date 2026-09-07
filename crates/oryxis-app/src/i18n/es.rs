@@ -2017,6 +2017,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_file_desc" => "Refleja la grabación en un archivo de texto mientras la sesión está en marcha, para seguirla desde fuera o entregarla a alguien. Ese archivo no está cifrado, a diferencia de la grabación en la bóveda.",
         "session_log_file_stopped" => "No se pudo escribir el archivo de texto; el espejo queda desactivado en esta sesión. La grabación en la bóveda continúa.",
         "sftp_link_down" => "Conexión perdida. Los archivos vuelven cuando la sesión se reconecte.",
+        "session_log_folder_title" => "Carpeta de registros de sesión",
         "connection_history" => "Historial de conexiones",
         "setting_connection_history_desc" => "Graba eventos de conexión (conexiones, desconexiones, fallos de autenticación, errores) en la bóveda.",
         "session_log_default" => "Predeterminado",

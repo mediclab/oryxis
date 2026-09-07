@@ -56,7 +56,7 @@ impl Oryxis {
                 return Ok(Task::perform(
                     tokio::task::spawn_blocking(|| {
                         rfd::FileDialog::new()
-                            .set_title("Session log folder")
+                            .set_title(crate::i18n::t("session_log_folder_title"))
                             .pick_folder()
                             .map(|p| p.display().to_string())
                     }),

@@ -74,11 +74,14 @@ impl Oryxis {
     /// Append one flushed chunk to the mirror, creating the folder and
     /// the file on the first call.
     ///
-    /// Owner-only (0700 / 0600) on unix, like the command log and the
-    /// vault file itself: the content is plaintext by design, which is
-    /// no reason to let the other accounts on the machine read a
-    /// session. Windows has no mode to set, so the file takes the
-    /// folder's ACL, which is the user's to choose.
+    /// Owner-only on unix, like the command log and the vault file
+    /// itself: the content is plaintext by design, which is no reason to
+    /// let the other accounts on the machine read a session. The file is
+    /// 0600; a folder is 0700 only when THIS call creates it. A folder
+    /// the user picked keeps the mode they gave it: it may be shared on
+    /// purpose, and a chmod on every flush would take that away from
+    /// every other account in silence. Windows has no mode to set, so
+    /// the file takes the folder's ACL, which is the user's to choose.
     pub(crate) fn append_session_log_file(
         &self,
         path: &Path,
@@ -93,12 +96,14 @@ impl Oryxis {
             return Ok(());
         }
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
             }
+            builder.create(dir)?;
         }
         let fresh = !path.exists();
         let mut opts = std::fs::OpenOptions::new();
@@ -112,10 +117,13 @@ impl Oryxis {
         if fresh {
             // A header, once: a file found months later has to say what
             // it is a recording OF, and the plain warning belongs on the
-            // artifact rather than only in the setting that made it.
+            // artifact rather than only in the setting that made it. The
+            // time is the mirror's own start (the first flush, which can
+            // be mid-session when the toggle was turned on late), not
+            // the session's; the vault row holds that one.
             writeln!(
                 file,
-                "# Oryxis session log, started {}\n# Not encrypted.\n",
+                "# Oryxis session log (plain-text mirror), mirror started {}\n# Not encrypted.\n",
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
             )?;
         }

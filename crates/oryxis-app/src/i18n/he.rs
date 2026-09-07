@@ -755,6 +755,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_file_desc" => "משכפל את ההקלטה לקובץ טקסט בזמן שהסשן רץ, למעקב ממקום אחר או להעברה למישהו. הקובץ הזה אינו מוצפן, בניגוד להקלטה בכספת.",
         "session_log_file_stopped" => "לא ניתן היה לכתוב את קובץ הטקסט; השכפול כובה לסשן זה. ההקלטה בכספת נמשכת.",
         "sftp_link_down" => "החיבור אבד. הקבצים יחזרו כשההפעלה תתחבר מחדש.",
+        "session_log_folder_title" => "תיקיית יומני הפעלה",
         "connection_history" => "היסטוריית חיבורים",
         "setting_connection_history_desc" => "תיעוד אירועי חיבור (התחברויות, ניתוקים, כשלי אימות, שגיאות) לכספת.",
         "session_log_default" => "ברירת מחדל",

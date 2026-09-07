@@ -212,12 +212,16 @@ pub(crate) fn sidebar_drag_out_payload(
     } else {
         vec![path.to_string()]
     };
-    items.retain(|p| {
-        files
-            .entries
-            .iter()
-            .any(|e| !e.is_dir && files_join(&files.path, &e.name) == *p)
-    });
+    // Membership through a set, the way `selected_items` resolves it:
+    // this runs on every press on a selected row, and a selection the
+    // size of the listing would otherwise cost a join per pair.
+    let present: std::collections::HashSet<String> = files
+        .entries
+        .iter()
+        .filter(|e| !e.is_dir)
+        .map(|e| files_join(&files.path, &e.name))
+        .collect();
+    items.retain(|p| present.contains(p));
     if items.is_empty() || items.len() > MAX_DRAG_OUT_FILES {
         return None;
     }

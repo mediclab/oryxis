@@ -710,6 +710,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_file_desc" => "Espelha a gravação em um arquivo de texto enquanto a sessão roda, para acompanhar de fora ou entregar a alguém. Esse arquivo não é criptografado, diferente da gravação no cofre.",
         "session_log_file_stopped" => "Não foi possível gravar o arquivo de texto; o espelho foi desligado nesta sessão. A gravação no cofre continua.",
         "sftp_link_down" => "Conexão perdida. Os arquivos voltam quando a sessão reconectar.",
+        "session_log_folder_title" => "Pasta dos registros de sessão",
         "connection_history" => "Histórico de conexões",
         "setting_connection_history_desc" => "Grava eventos de conexão (conexões, desconexões, falhas de autenticação, erros) no cofre.",
         "session_log_default" => "Padrão",

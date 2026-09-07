@@ -1070,20 +1070,6 @@ mod lww_tests {
             .map(|c| c.label)
     }
 
-    /// The Telnet TLS escape ("accept a certificate the trust store
-    /// rejects") is a decision about ONE appliance on ONE machine, so
-    /// it must not ride the wire: a peer would otherwise disarm
-    /// certificate verification on a computer whose owner never saw
-    /// mosh options travel WHOLE, and that is the deliberate half of
-    /// the same decision.
-    ///
-    /// Two of them become words in a command line, so the question of
-    /// whether they should be stripped is a fair one. They should not:
-    /// what they run runs on the REMOTE host, which is the host the
-    /// session is opening anyway, which makes them the same class as
-    /// `initial_command`. The gate on `ProxyType::Command` exists
-    /// because that one spawns a LOCAL process, on the machine the user
-    /// is sitting at, before any handshake. Nothing here does.
     /// Recency is per device. A peer's later edit of a host lands with
     /// everything it carries except this machine's own "last used": the
     /// stamp the row had here stays, and a host new to this machine
@@ -1149,6 +1135,16 @@ mod lww_tests {
         assert_eq!(wire.connection.last_used, None, "recency rode the wire");
     }
 
+    /// The mosh options travel WHOLE, and that is the deliberate half of
+    /// the decision the Telnet escape below settles the other way.
+    ///
+    /// Two of them become words in a command line, so the question of
+    /// whether they should be stripped is a fair one. They should not:
+    /// what they run runs on the REMOTE host, which is the host the
+    /// session is opening anyway, which makes them the same class as
+    /// `initial_command`. The gate on `ProxyType::Command` exists
+    /// because that one spawns a LOCAL process, on the machine the user
+    /// is sitting at, before any handshake. Nothing here does.
     #[test]
     fn collect_keeps_every_mosh_option() {
         let vault = vault();
@@ -1180,6 +1176,10 @@ mod lww_tests {
         assert_eq!(mosh.command, "tmux new -A -s main");
     }
 
+    /// The Telnet TLS escape ("accept a certificate the trust store
+    /// rejects") is a decision about ONE appliance on ONE machine, so
+    /// it must not ride the wire: a peer would otherwise disarm
+    /// certificate verification on a computer whose owner never saw
     /// that host. The TLS setting itself DOES travel, because it
     /// describes the endpoint. Same shape as the command-proxy
     /// approval, which is local-only by construction.

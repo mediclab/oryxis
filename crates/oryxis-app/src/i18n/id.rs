@@ -736,6 +736,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_file_desc" => "Menyalin rekaman ke berkas teks selagi sesi berjalan, untuk dipantau di tempat lain atau diserahkan ke orang lain. Berkas itu tidak dienkripsi, tidak seperti rekaman di brankas.",
         "session_log_file_stopped" => "Berkas teks tidak dapat ditulis; penyalinan dimatikan untuk sesi ini. Perekaman di brankas tetap berjalan.",
         "sftp_link_down" => "Koneksi terputus. File kembali saat sesi tersambung lagi.",
+        "session_log_folder_title" => "Folder log sesi",
         "connection_history" => "Riwayat koneksi",
         "setting_connection_history_desc" => "Rekam peristiwa koneksi (koneksi, pemutusan, kegagalan autentikasi, kesalahan) ke vault.",
         "session_log_default" => "Bawaan",

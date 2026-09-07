@@ -736,6 +736,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "setting_session_log_file_desc" => "Oturum sürerken kaydı bir metin dosyasına da yazar; başka bir yerden izlemek veya birine vermek için. Bu dosya, kasadaki kaydın aksine şifrelenmez.",
         "session_log_file_stopped" => "Metin dosyası yazılamadı; bu oturum için eş zamanlı yazma kapatıldı. Kasadaki kayıt devam ediyor.",
         "sftp_link_down" => "Bağlantı koptu. Oturum yeniden bağlanınca dosyalar geri gelir.",
+        "session_log_folder_title" => "Oturum günlüğü klasörü",
         "connection_history" => "Bağlantı geçmişi",
         "setting_connection_history_desc" => "Bağlantı olaylarını (bağlantılar, kesilmeler, kimlik doğrulama hataları, hatalar) kasaya kaydeder.",
         "session_log_default" => "Varsayılan",
