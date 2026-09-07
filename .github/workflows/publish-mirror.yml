@@ -250,7 +250,13 @@ jobs:
                 got=""
                 # The purge above is asynchronous, so the China leg is
                 # given time to come back rather than read once and fail.
-                for _ in 1 2 3 4 5 6; do
+                # The Cloudflare leg is never purged: its edge holds the
+                # snapshots for their max-age (300 s), and an update check
+                # that warmed a PoP moments before the publish would keep
+                # serving the previous tag there. So the wait covers a
+                # full max-age rather than reporting a red release for a
+                # cache that expires on its own.
+                for _ in $(seq 1 32); do
                   got=$(curl -fsS "https://$host/releases/latest.json" \
                     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag_name",""))') || true
                   [ "$got" = "$TAG" ] && break
