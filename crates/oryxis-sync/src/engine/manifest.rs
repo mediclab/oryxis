@@ -307,6 +307,14 @@ pub(crate) fn collect_records(
                     // could apply to a host its owner never inspected.
                     let mut connection = c.clone();
                     connection.strip_local_trust();
+                    // Recency is a fact about THIS device's use of the
+                    // host (the tray's recent list, the JumpList), so it
+                    // stays home: a peer's "last used" is not ours, and
+                    // `mark_host_used` never bumps `updated_at`, which is
+                    // what would otherwise let a peer's later edit of the
+                    // host replace it with theirs. The apply side keeps
+                    // the local value for the same reason.
+                    connection.last_used = None;
                     let wrapper = protocol::SyncConnection {
                         connection,
                         password,
@@ -487,6 +495,13 @@ pub(crate) fn apply_records(
     // would leak past the `?`.
     v.begin_batch()?;
 
+    // This device's own recency per host, read once and only if a
+    // connection record arrives (see the `last_used` rule in the
+    // Connection arm below).
+    let mut local_recency: Option<
+        std::collections::HashMap<Uuid, Option<chrono::DateTime<chrono::Utc>>>,
+    > = None;
+
     for record in records {
         // Defensive LWW, before decrypt and before the delete branch:
         // only apply a record strictly newer than what we already hold.
@@ -581,6 +596,17 @@ pub(crate) fn apply_records(
                         // machine either.
                         sc.connection.strip_local_trust();
                         let id = sc.connection.id;
+                        // This device's recency stays this device's:
+                        // whatever the peer sent (nothing since the send
+                        // side strips it, their own stamp before that),
+                        // the row keeps the `last_used` it had here, and
+                        // a host new to this machine starts unused.
+                        let recency = local_recency.get_or_insert_with(|| {
+                            v.list_connections()
+                                .map(|cs| cs.into_iter().map(|c| (c.id, c.last_used)).collect())
+                                .unwrap_or_default()
+                        });
+                        sc.connection.last_used = recency.get(&id).copied().flatten();
                         if overwrites_local {
                             let route = match sc.connection.proxy.as_ref() {
                                 Some(p) => format!(
@@ -997,9 +1023,20 @@ mod lww_tests {
 
     /// A sealed connection record stamped at `ts`, as a peer would push it.
     fn conn_record(id: Uuid, label: &str, ts: chrono::DateTime<Utc>) -> protocol::SyncRecord {
+        conn_record_used(id, label, ts, None)
+    }
+
+    /// The same, carrying the peer's own `last_used` stamp.
+    fn conn_record_used(
+        id: Uuid,
+        label: &str,
+        ts: chrono::DateTime<Utc>,
+        last_used: Option<chrono::DateTime<Utc>>,
+    ) -> protocol::SyncRecord {
         let mut c = Connection::new(label, "10.0.0.9");
         c.id = id;
         c.updated_at = ts;
+        c.last_used = last_used;
         let wrapper = protocol::SyncConnection {
             connection: c,
             password: None,
@@ -1047,6 +1084,71 @@ mod lww_tests {
     /// `initial_command`. The gate on `ProxyType::Command` exists
     /// because that one spawns a LOCAL process, on the machine the user
     /// is sitting at, before any handshake. Nothing here does.
+    /// Recency is per device. A peer's later edit of a host lands with
+    /// everything it carries except this machine's own "last used": the
+    /// stamp the row had here stays, and a host new to this machine
+    /// arrives unused whatever the peer's stamp said.
+    #[test]
+    fn a_peer_edit_keeps_this_devices_recency() {
+        let vault = vault();
+        let id = Uuid::new_v4();
+        let edited = Utc::now() - Duration::hours(2);
+        let used_here = Utc::now() - Duration::hours(1);
+        let mut local = Connection::new("box", "10.0.0.9");
+        local.id = id;
+        local.updated_at = edited;
+        local.last_used = Some(used_here);
+        vault.lock().unwrap().save_connection(&local, None).unwrap();
+
+        let theirs = Utc::now() - Duration::minutes(30);
+        let newcomer = Uuid::new_v4();
+        apply_records(
+            &vault,
+            &[
+                conn_record_used(id, "box-renamed", Utc::now(), Some(theirs)),
+                conn_record_used(newcomer, "new-box", Utc::now(), Some(theirs)),
+            ],
+            Some(&SECRET),
+        )
+        .unwrap();
+
+        let conns = vault.lock().unwrap().list_connections().unwrap();
+        let box_ = conns.iter().find(|c| c.id == id).expect("the edit landed");
+        assert_eq!(box_.label, "box-renamed", "the peer's edit was not applied");
+        assert_eq!(
+            box_.last_used.map(|t| t.timestamp()),
+            Some(used_here.timestamp()),
+            "the peer's recency replaced this device's",
+        );
+        let new = conns.iter().find(|c| c.id == newcomer).expect("the new host landed");
+        assert_eq!(new.last_used, None, "a host never used here arrived with a stamp");
+    }
+
+    /// The send side never puts recency on the wire: a peer that
+    /// predates the apply-side rule would otherwise write ours over its
+    /// own.
+    #[test]
+    fn collect_leaves_recency_home() {
+        let vault = vault();
+        let mut c = Connection::new("box", "10.0.0.9");
+        c.last_used = Some(Utc::now());
+        vault.lock().unwrap().save_connection(&c, None).unwrap();
+
+        let records = collect_records(
+            &vault,
+            &[protocol::DeltaRef {
+                entity_type: EntityType::Connection,
+                entity_id: c.id,
+            }],
+            Some(&SECRET),
+        )
+        .unwrap();
+        let cipher = crypto::PayloadCipher::new(&SECRET).unwrap();
+        let plain = cipher.decrypt(&records[0].payload).unwrap();
+        let wire: protocol::SyncConnection = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(wire.connection.last_used, None, "recency rode the wire");
+    }
+
     #[test]
     fn collect_keeps_every_mosh_option() {
         let vault = vault();
