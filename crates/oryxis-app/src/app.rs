@@ -1375,10 +1375,17 @@ pub struct Oryxis {
     /// Where recordings go while the vault is soft-locked
     /// (`session_spool`), opened by the first flush under a lock.
     pub(crate) session_spool: Option<crate::session_spool::SessionSpool>,
-    /// The spool could not be opened once; the flush then keeps the
-    /// rows on the panes as it always did, and does not retry a folder
-    /// it cannot create on every batch.
+    /// The spool could not be opened, or could not take a batch; the
+    /// flush then keeps the rows on the panes as it always did, and does
+    /// not retry a folder it cannot write on every batch. What was
+    /// spooled before still drains.
     pub(crate) session_spool_unavailable: bool,
+    /// Recordings that lost a batch to a spool that could not write,
+    /// marked truncated at the drain so the vault row says so.
+    pub(crate) session_spool_lost: Vec<Uuid>,
+    /// Recordings that ended under a lock with no spool to carry the
+    /// stamp; ended at the drain.
+    pub(crate) session_log_end_pending: Vec<Uuid>,
     /// Instant of the last successful password unlock. The Enter that
     /// submits the unlock password reaches the global key subscription
     /// one message AFTER the widget's on_submit unlocked the vault, so

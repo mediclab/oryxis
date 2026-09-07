@@ -17,10 +17,11 @@
 //! vault ahead of whatever the panes hold then, `End` rows included, so
 //! a recording that ended under lock is stamped ended too.
 //!
-//! What still goes with the process: a session closed under lock has
-//! its last stretch in a file only this process can read, and a window
-//! closed under lock leaves the same. Unlocking first keeps both, which
-//! is what the lock screen is for.
+//! A session closed under the lock is fine: its spool has no pane any
+//! more and is drained all the same. What is lost is a spool whose
+//! PROCESS exits before the unlock (the window closed under the lock):
+//! only that process could read it. Unlocking first keeps it, which is
+//! what the lock screen is for.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;

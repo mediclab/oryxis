@@ -63,10 +63,9 @@ impl MirrorWriter {
     fn start() -> Self {
         let (jobs, job_rx) = mpsc::channel::<MirrorRequest>();
         let (failure_tx, failures) = mpsc::channel::<Uuid>();
-        // A thread that cannot start is the one failure this cannot
-        // report through its own channel; the jobs then sit in a
-        // channel nobody reads and every mirror is reported failed at
-        // the next flush by `take_failures` seeing the sender gone.
+        // A thread that cannot start leaves `jobs` with no receiver, so
+        // every `enqueue` from then on answers false and the flush
+        // treats the refusal as a failed write for that recording.
         let spawned = std::thread::Builder::new()
             .name("session-log-mirror".into())
             .spawn(move || {
@@ -93,11 +92,15 @@ impl MirrorWriter {
         Self { jobs, failures }
     }
 
-    /// Queue one chunk. Never blocks the caller.
-    pub(crate) fn enqueue(&self, job: MirrorJob) {
-        if self.jobs.send(MirrorRequest::Write(Box::new(job))).is_err() {
+    /// Queue one chunk. Never blocks the caller. `false` when the
+    /// thread is gone, which the caller treats as that recording's
+    /// mirror having failed.
+    pub(crate) fn enqueue(&self, job: MirrorJob) -> bool {
+        let accepted = self.jobs.send(MirrorRequest::Write(Box::new(job))).is_ok();
+        if !accepted {
             tracing::warn!("session log mirror thread is gone; a chunk was not mirrored");
         }
+        accepted
     }
 
     /// The recordings whose file could not be written since the last
@@ -237,4 +240,52 @@ fn append_mirror_file(
         )?;
     }
     file.write_all(text.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(log_id: Uuid, path: PathBuf) -> MirrorJob {
+        MirrorJob {
+            log_id,
+            path,
+            bytes: b"hello\r\n".to_vec(),
+            palette: oryxis_terminal::TerminalPalette::default(),
+        }
+    }
+
+    #[test]
+    fn a_failed_write_is_reported_once_and_only_after_it_happened() {
+        let dir = tempfile::tempdir().unwrap();
+        // A parent that is a FILE cannot be created as a directory, so
+        // the append fails the way an unplugged folder does.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        let writer = MirrorWriter::start();
+        let bad = Uuid::new_v4();
+        let good = Uuid::new_v4();
+        assert!(writer.enqueue(job(bad, blocker.join("session.txt"))));
+        assert!(writer.enqueue(job(bad, blocker.join("session.txt"))));
+        assert!(writer.enqueue(job(good, dir.path().join("ok.txt"))));
+        writer.drain(std::time::Duration::from_secs(5));
+        assert_eq!(writer.take_failures(), vec![bad]);
+        assert!(writer.take_failures().is_empty());
+        assert!(dir.path().join("ok.txt").exists());
+    }
+
+    #[test]
+    fn a_writer_with_no_thread_refuses_the_job_on_the_spot() {
+        let (jobs, job_rx) = mpsc::channel::<MirrorRequest>();
+        let (_failure_tx, failures) = mpsc::channel::<Uuid>();
+        drop(job_rx);
+        let writer = MirrorWriter { jobs, failures };
+        assert!(!writer.enqueue(job(Uuid::new_v4(), PathBuf::from("/nowhere/x.txt"))));
+        assert!(writer.take_failures().is_empty());
+        // Draining a dead writer returns at once rather than waiting out
+        // the timeout.
+        let t = std::time::Instant::now();
+        writer.drain(std::time::Duration::from_secs(5));
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+    }
 }

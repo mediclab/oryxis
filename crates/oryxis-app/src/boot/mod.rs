@@ -579,6 +579,8 @@ impl Oryxis {
                 last_session_log_capacity_check: std::time::Instant::now(),
                 session_spool: None,
                 session_spool_unavailable: false,
+                session_spool_lost: Vec::new(),
+                session_log_end_pending: Vec::new(),
                 last_unlock: None,
                 biometric_available,
                 pending_update: None,
