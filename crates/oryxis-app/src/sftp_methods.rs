@@ -1103,6 +1103,54 @@ impl Oryxis {
     /// left alone. Works on the hoisted buffer or the parked
     /// `files_state` alike; completions are stamped with the tab id so
     /// `route_sftp_async` lands them wherever the state lives by then.
+    /// The session behind a tab's Files browsing dropped: say so on the
+    /// surface, in the slot the next operation's error would take.
+    ///
+    /// The mount itself is kept on purpose. It is what
+    /// [`Self::hybrid_sftp_remount_dead`] lands on when the pane
+    /// reconnects (the auto-reconnect of a lone pane, the restart of one
+    /// in a split), at the directory the user was in, and that remount
+    /// clears the notice. Matched by host label the way the remount is,
+    /// and only on a mount whose channel is actually dead, so a second
+    /// pane on the same host does not mark a browser it did not back.
+    pub(crate) fn hybrid_sftp_mark_dead(&mut self, tab_idx: usize, pane_id: uuid::Uuid) {
+        let Some(tab) = self.tabs.get(tab_idx) else {
+            return;
+        };
+        let tab_id = tab._id;
+        let Some(label) = tab
+            .pane_grid
+            .panes
+            .values()
+            .find(|p| p.id == pane_id)
+            .map(|p| p.label.trim_end_matches(" (disconnected)").to_string())
+        else {
+            return;
+        };
+        let hoisted = self.hybrid_sftp_owner == Some(tab_id);
+        for side in [
+            crate::state::SftpPaneSide::Left,
+            crate::state::SftpPaneSide::Right,
+        ] {
+            let st: &mut crate::state::SftpState = if hoisted {
+                &mut self.sftp
+            } else {
+                match self.tabs.get_mut(tab_idx) {
+                    Some(t) => &mut t.files_state,
+                    None => return,
+                }
+            };
+            let pane = st.pane_mut(side);
+            if !pane.is_remote || pane.host_label.as_deref() != Some(label.as_str()) {
+                continue;
+            }
+            if pane.session.as_ref().is_some_and(|s| s.is_alive()) {
+                continue;
+            }
+            pane.error = Some(crate::i18n::t("sftp_link_down").to_string());
+        }
+    }
+
     pub(crate) fn hybrid_sftp_remount_dead(
         &mut self,
         tab_idx: usize,

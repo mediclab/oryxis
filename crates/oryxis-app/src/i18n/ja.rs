@@ -2025,6 +2025,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "session_log_file" => "テキストファイルにも書き出す",
         "setting_session_log_file_desc" => "セッション中に記録をテキストファイルへ同時に書き出します。別の場所で追ったり、誰かに渡したりできます。このファイルは、金庫内の記録と違って暗号化されません。",
         "session_log_file_stopped" => "テキストファイルに書き込めなかったため、このセッションの同時書き出しは無効になりました。金庫内の記録は続行されます。",
+        "sftp_link_down" => "接続が切れました。セッションが再接続するとファイルが戻ります。",
         "connection_history" => "接続履歴",
         "setting_connection_history_desc" => "接続イベント（接続、切断、認証失敗、エラー）をボールトに記録します。",
         "session_log_default" => "デフォルト",

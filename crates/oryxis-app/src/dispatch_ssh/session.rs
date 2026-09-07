@@ -405,6 +405,12 @@ impl Oryxis {
                     // Same for a confirmation still on screen: it asks
                     // about a session that no longer exists.
                     self.reset_triggers_for_pane(pane_id);
+                    // The tab's Files browsing rides this session. The
+                    // mount is kept for the remount to land on at the
+                    // same directory (`hybrid_sftp_remount_dead`); until
+                    // then the surface says the link is down rather than
+                    // failing one operation at a time.
+                    self.hybrid_sftp_mark_dead(tab_idx, pane_id);
                     if let Some(log_id) = log_id
                         && let Some(vault) = &self.vault
                     {

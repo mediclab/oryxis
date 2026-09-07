@@ -2023,6 +2023,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "session_log_file" => "同時寫入純文字檔",
         "setting_session_log_file_desc" => "工作階段進行時把錄製內容同步寫入文字檔，方便在別處追蹤或交給他人。該檔案不加密，與保險庫中的錄製不同。",
         "session_log_file_stopped" => "無法寫入文字檔，本次工作階段的同步寫入已關閉。保險庫中的錄製仍在繼續。",
+        "sftp_link_down" => "連線已中斷。工作階段重新連線後檔案會恢復。",
         "connection_history" => "連線歷史記錄",
         "setting_connection_history_desc" => "將連線事件（連線、中斷、驗證失敗、錯誤）記錄到保險庫。",
         "session_log_default" => "預設",

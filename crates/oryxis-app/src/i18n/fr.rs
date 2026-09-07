@@ -2063,6 +2063,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "session_log_file" => "Écrire aussi un fichier texte",
         "setting_session_log_file_desc" => "Recopie l'enregistrement dans un fichier texte pendant la session, pour le suivre ailleurs ou le transmettre. Ce fichier n'est pas chiffré, contrairement à l'enregistrement dans le coffre.",
         "session_log_file_stopped" => "Le fichier texte n'a pas pu être écrit ; la recopie est désactivée pour cette session. L'enregistrement dans le coffre continue.",
+        "sftp_link_down" => "Connexion perdue. Les fichiers reviennent quand la session se reconnecte.",
         "connection_history" => "Historique des connexions",
         "setting_connection_history_desc" => "Enregistre les événements de connexion (connexions, déconnexions, échecs d'authentification, erreurs) dans le coffre.",
         "session_log_default" => "Par défaut",

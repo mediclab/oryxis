@@ -2009,6 +2009,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "session_log_file" => "Scrivi anche un file di testo",
         "setting_session_log_file_desc" => "Rispecchia la registrazione in un file di testo mentre la sessione è in corso, per seguirla altrove o consegnarla a qualcuno. Quel file non è cifrato, a differenza della registrazione nella cassaforte.",
         "session_log_file_stopped" => "Impossibile scrivere il file di testo; la copia è disattivata per questa sessione. La registrazione nella cassaforte continua.",
+        "sftp_link_down" => "Connessione persa. I file tornano quando la sessione si riconnette.",
         "connection_history" => "Cronologia connessioni",
         "setting_connection_history_desc" => "Registra gli eventi di connessione (connessioni, disconnessioni, errori di autenticazione, errori) nel vault.",
         "session_log_default" => "Predefinito",

@@ -740,6 +740,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "session_log_file" => "Zapisuj także plik tekstowy",
         "setting_session_log_file_desc" => "Kopiuje nagranie do pliku tekstowego w trakcie sesji, aby śledzić je gdzie indziej albo komuś przekazać. Ten plik nie jest szyfrowany, inaczej niż nagranie w sejfie.",
         "session_log_file_stopped" => "Nie udało się zapisać pliku tekstowego; kopiowanie dla tej sesji zostało wyłączone. Nagrywanie w sejfie trwa.",
+        "sftp_link_down" => "Utracono połączenie. Pliki wrócą, gdy sesja połączy się ponownie.",
         "connection_history" => "Historia połączeń",
         "setting_connection_history_desc" => "Zapisuje zdarzenia połączeń (połączenia, rozłączenia, błędy uwierzytelniania, błędy) w sejfie.",
         "session_log_default" => "Domyślnie",
