@@ -283,13 +283,22 @@ struct CjkAsset {
     /// Short language code used as the in-memory "already loaded" guard
     /// key and the cache file stem.
     code: &'static str,
-    /// The family this file is registered under, which is NOT the family
-    /// the file declares (issue #189). cosmic-text resolves a Han
-    /// codepoint the UI font can't draw by naming one family per locale,
-    /// and on Linux that name is `Noto Sans CJK <region>`, never
+    /// The family this file is registered under on Linux, which is NOT
+    /// the family the file declares (issue #189). cosmic-text resolves a
+    /// Han codepoint the UI font can't draw by naming one family per
+    /// locale, and on Linux that name is `Noto Sans CJK <region>`, never
     /// `Noto Sans <region>`. See `font_family` for why claiming it is
     /// honest and why the rename is in memory only.
     family: &'static str,
+    /// The family claimed on macOS, where the per-script list names
+    /// Apple's own faces. `None` where that face is still a file the
+    /// font database can enumerate (`Hiragino Sans`, `Apple SD Gothic
+    /// Neo` under `/System/Library/Fonts`). PingFang is not: since
+    /// macOS 15 it lives as `PingFangUI.ttc` inside a private framework
+    /// that no directory scan reaches, so `PingFang SC` and `PingFang
+    /// TC` resolve to nothing and Han falls through to the same
+    /// per-character sweep the Linux fix was about.
+    family_macos: Option<&'static str>,
     asset: FontAsset,
 }
 
@@ -307,6 +316,7 @@ static ASSETS: &[CjkAsset] = &[
     CjkAsset {
         code: "ko",
         family: "Noto Sans CJK KR",
+        family_macos: None,
         asset: FontAsset {
             file: "NotoSansKR.ttf",
             url: "https://raw.githubusercontent.com/google/fonts/c89741abbf4eeabce432c3ed2fd7dc28b022701e/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf",
@@ -317,6 +327,7 @@ static ASSETS: &[CjkAsset] = &[
     CjkAsset {
         code: "zh",
         family: "Noto Sans CJK SC",
+        family_macos: Some("PingFang SC"),
         asset: FontAsset {
             file: "NotoSansSC.ttf",
             url: "https://raw.githubusercontent.com/google/fonts/c89741abbf4eeabce432c3ed2fd7dc28b022701e/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
@@ -327,6 +338,7 @@ static ASSETS: &[CjkAsset] = &[
     CjkAsset {
         code: "ja",
         family: "Noto Sans CJK JP",
+        family_macos: None,
         asset: FontAsset {
             file: "NotoSansJP.ttf",
             url: "https://raw.githubusercontent.com/google/fonts/c89741abbf4eeabce432c3ed2fd7dc28b022701e/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
@@ -337,6 +349,7 @@ static ASSETS: &[CjkAsset] = &[
     CjkAsset {
         code: "zh-TW",
         family: "Noto Sans CJK TC",
+        family_macos: Some("PingFang TC"),
         asset: FontAsset {
             file: "NotoSansTC.ttf",
             url: "https://raw.githubusercontent.com/google/fonts/c89741abbf4eeabce432c3ed2fd7dc28b022701e/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf",
@@ -885,19 +898,20 @@ pub fn ensure_task(lang: Language) -> iced::Task<Message> {
 
 /// The bytes to register with the font system for a CJK asset.
 ///
-/// On Linux, cosmic-text's per-script fallback names `Noto Sans CJK
-/// <region>` for Han and nothing else, so the file we download under its
-/// own `Noto Sans <region>` family is only ever reached by the sweep
-/// over every remaining face, which it loses (issue #189). Answering to
-/// the name that is actually asked for is what puts the font we shipped
-/// in front of whatever the machine happens to have installed.
+/// cosmic-text's per-script fallback names ONE family for Han per
+/// platform and nothing else, so the file we download under its own
+/// `Noto Sans <region>` family is only ever reached by the sweep over
+/// every remaining face, which it loses (issue #189). Answering to the
+/// name that is actually asked for is what puts the font we shipped in
+/// front of whatever the machine happens to have installed, and only
+/// where that name is otherwise missing: a machine that really has the
+/// family wins the weight match (see `font_family`).
 ///
-/// macOS and Windows name their own system faces (PingFang, Microsoft
-/// YaHei), which are always present and render correctly, so the rename
-/// would be claiming a family we are not. They keep the file as it is.
+/// Windows names `Microsoft YaHei UI`, which every install carries and
+/// which renders correctly, so the file stays as it is there.
 fn registered_bytes(mut bytes: Vec<u8>, asset: &'static CjkAsset) -> Vec<u8> {
-    if CLAIMS_FALLBACK_FAMILY
-        && !crate::font_family::set_family(&mut bytes, asset.family)
+    if let Some(family) = claimed_family(asset)
+        && !crate::font_family::set_family(&mut bytes, family)
     {
         tracing::warn!(
             target = "oryxis::fonts",
@@ -908,13 +922,21 @@ fn registered_bytes(mut bytes: Vec<u8>, asset: &'static CjkAsset) -> Vec<u8> {
     bytes
 }
 
-/// Whether this platform's per-script fallback names a family only we
-/// can supply. A `cfg!` rather than a `cfg`, so the rewrite and its
-/// tests keep compiling on every target: the sfnt surgery has nothing
-/// platform-specific in it, and hiding it behind a `cfg` would leave the
-/// macOS and Windows CI jobs building a file they never check.
-const CLAIMS_FALLBACK_FAMILY: bool =
-    cfg!(all(unix, not(any(target_os = "android", target_os = "macos"))));
+/// The family the fallback asks for on this platform that only we can
+/// supply, or `None` where the system's own face answers. A `cfg!`
+/// rather than a `cfg`, so the rewrite and its tests keep compiling on
+/// every target: the sfnt surgery has nothing platform-specific in it,
+/// and hiding it behind a `cfg` would leave the macOS and Windows CI
+/// jobs building a file they never check.
+fn claimed_family(asset: &CjkAsset) -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        asset.family_macos
+    } else if cfg!(all(unix, not(target_os = "android"))) {
+        Some(asset.family)
+    } else {
+        None
+    }
+}
 
 /// A task that ensures one pack face is available (cache read or
 /// download) and reports back as `PackFontReady`, which registers the
@@ -952,6 +974,7 @@ pub fn boot_pack_tasks(
 
 #[cfg(test)]
 mod tests {
+    use super::{claimed_family, ASSETS};
     use crate::i18n::Language;
     use fontdb::{Database, Family, Query, Stretch, Style, Weight};
 
@@ -1191,6 +1214,32 @@ mod tests {
                     lang.code(),
                     lang.name(),
                 );
+            }
+        }
+    }
+
+    /// The family each platform claims for the downloaded file: the
+    /// per-script name the text stack asks for wherever that name is
+    /// not a face the font database can enumerate, and nothing where it
+    /// is. Evaluated on the target the test runs on, so the three CI
+    /// jobs each check their own answer.
+    #[test]
+    fn the_claimed_family_is_the_one_the_platform_cannot_find() {
+        let by_code = |code: &str| ASSETS.iter().find(|a| a.code == code).unwrap();
+        let (sc, tc, ja, ko) = (by_code("zh"), by_code("zh-TW"), by_code("ja"), by_code("ko"));
+        if cfg!(target_os = "macos") {
+            assert_eq!(claimed_family(sc), Some("PingFang SC"));
+            assert_eq!(claimed_family(tc), Some("PingFang TC"));
+            assert_eq!(claimed_family(ja), None);
+            assert_eq!(claimed_family(ko), None);
+        } else if cfg!(all(unix, not(target_os = "android"))) {
+            assert_eq!(claimed_family(sc), Some("Noto Sans CJK SC"));
+            assert_eq!(claimed_family(tc), Some("Noto Sans CJK TC"));
+            assert_eq!(claimed_family(ja), Some("Noto Sans CJK JP"));
+            assert_eq!(claimed_family(ko), Some("Noto Sans CJK KR"));
+        } else {
+            for asset in ASSETS {
+                assert_eq!(claimed_family(asset), None);
             }
         }
     }

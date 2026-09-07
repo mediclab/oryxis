@@ -14,6 +14,15 @@
 //! which puts them 300 to 600 units away from every weight the UI asks
 //! for.
 //!
+//! macOS has the same hole with a different name in it. `PingFang SC`
+//! was a file under `/System/Library/Fonts` up to Sonoma; since macOS
+//! 15 it ships as `PingFangUI.ttc` inside a private framework that no
+//! directory scan reaches, so the one family the fallback names for
+//! Han resolves to nothing and the sweep decides per character there
+//! too. That is the second half of issue #189, and the file claims
+//! `PingFang SC` / `PingFang TC` on that platform for the same reason it
+//! claims `Noto Sans CJK` on Linux (`fonts::claimed_family`).
+//!
 //! The visible result on a machine with no `Noto Sans CJK SC` installed
 //! is that one Chinese word gets its characters from whatever fonts
 //! happen to cover them: measured here, `恢复默认` came back as three
