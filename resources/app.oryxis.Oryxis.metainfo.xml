@@ -69,6 +69,23 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.17.0" date="2026-09-07">
+      <description>
+        <p>
+          Split panes gain a title bar of their own, drag rearranging, a
+          way out into a tab of their own and an end-of-session card
+          offering restart or close. Adds a plain text mirror of a
+          running session recording, restoring last session's tabs at
+          launch, an opt-in ask before closing a live session, a
+          confirmation for links printed by a remote host with the login
+          callback tunnelled over the session, the rest of the sftp(1)
+          command set in the SFTP console, and multi-select in the
+          sidebar Files browser. Fixes a macOS crash under sustained
+          output and a local shell freezing its pane on exit.
+        </p>
+      </description>
+      <url>https://github.com/wilsonglasser/oryxis/releases/tag/v0.17.0</url>
+    </release>
     <release version="0.16.0" date="2026-08-31">
       <description>
         <p>

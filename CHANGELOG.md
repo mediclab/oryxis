@@ -4,6 +4,71 @@ All notable changes to Oryxis are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-09-07
+
+Split panes come into their own: each pane of a split tab can carry its own title bar, be dragged to a new place, leave for a tab of its own, and end on its own terms with a card offering restart or close. Alongside them, a recording can mirror itself into a plain text file while the session runs, last session's tabs come back at launch, a live session can ask before it is closed, a link printed by a remote host is confirmed before the browser opens and a CLI login's callback is tunnelled home, the SFTP console completes the `sftp(1)` command set, and the sidebar Files browser gains multi-select.
+
+### Added
+- Title bar on each pane of a split tab (Settings > Terminal > Split panes, off by default): label, connection state, restart and close; not mirrored under RTL (#208).
+- Drag a pane by its title bar onto a sibling to swap places, or onto a grid edge to move it there (#208).
+- A pane can leave its grid: into a tab of its own (pane menu, tab menu, Ctrl+Alt+P) or, dragged by its header, onto another tab's chip (#216, by @kblock1).
+- A pane whose session ends keeps its scrollback and offers restart in place or close; "When a pane's session ends" picks the default (#213, by @kblock1).
+- A local shell that exits says so, with its exit code or signal, and a restart keeps the scrollback (#209, #213, by @kblock1).
+- The status bar and the tab chip describe the focused pane of a split (#213, by @kblock1).
+- Restore last session's tabs at launch (Settings > Interface, off by default): they come back as placeholders and connect when selected (#206).
+- The five most recent hosts sit in the `+` popover and the strip's right-click menu; the tray's Recent hosts and the Windows JumpList fill in at last (#206).
+- Ask before closing a tab or the app with a live session (Settings > Terminal, off by default), the window close and the tray's Quit included (#204, by @shideqin).
+- A closed quick-connect tab comes back through Reopen Closed Tab and asks for its password again (#186).
+- Copy Screen copies the viewport as drawn, from the terminal's context menu or the tab menu (#198, by @hamidrg20001379).
+- The terminal's context menu names the chord for Copy, Paste and Paste selection, read from the live bindings (#187).
+- Ctrl+click on a link in a remote pane asks first, naming the host that printed it and the full target (Settings > Terminal, on by default) (#200, by @kblock1).
+- A CLI login's loopback callback (`aws sso login` and the like) is forwarded over the session's SSH connection, so the login finishes in your browser (#200, by @kblock1).
+- A recording can also write a plain text file while it runs (Settings > Security & Privacy, off by default), one file per recording, folder of your choice (#187).
+- SFTP console: `df`, `ln`, `symlink`, `cp` / `copy`, `chown`, `chgrp` and `lumask`, plus the `-r`, `-p`, `-f` and `-h` flags.
+- SFTP console: Tab lists the candidates when the word cannot grow, completes local paths for `put`, `lcd` and `lls`, and quotes a name with spaces.
+- SFTP console: `ls -l` shows owner and group by name; a single file resolves them through `users-groups-by-id@openssh.com` (OpenSSH 8.7 and later), ids otherwise.
+- The console's local directory starts at the download folder.
+- Sidebar Files: multi-select with Ctrl-click, Shift-click and Ctrl+A, then copy paths, delete, download or drag out the whole selection (#205, by @shideqin).
+- The Files surface says when its connection is lost, and the listing comes back when the session reconnects.
+- "Only hosts with a live session" (Settings > Monitoring): the dashboard shows the machines a terminal tab is logged in to and never dials on its own (#197).
+- A downloaded update waits for the restart like any close: with the close guard on and sessions live it asks first, and Settings > About offers the restart later.
+- One Show reveals every secret on the MCP setup panel, the token inside the snippet included.
+- The plain-text session log folder and the command log folder get a Reset once a custom folder is set.
+- The SFTP integration suite runs against any sshd through `ORYXIS_TEST_SSH`, with no Docker.
+
+### Changed
+- Reconnect on a split tab restarts the focused pane instead of rebuilding the whole tab (#213, by @kblock1).
+- Enter no longer confirms a destructive dialog; the refusing button is the default (#204, by @shideqin).
+- The renderer and opacity restart dialogs make "Restart now" a deliberate choice while a session is live.
+- The update offer answers the keyboard: Esc is Later, and Enter never downloads or restarts on its own.
+- A host's last-used time no longer syncs; each device keeps its own recent hosts.
+- A wrapped URL opens whole and is coloured on every row it spans (#200, by @kblock1).
+- A scrolled-up viewport holds its place while output runs, including once the scrollback is full (#218, by @shideqin).
+- SFTP console transfers follow `sftp(1)`: `-r` skips symlinks, `-p` carries modes and times, a batch continues past a failed file and reports the count, and `*` leaves dotfiles alone.
+- Every native file dialog is titled in the app's language.
+
+### Security
+- A link printed by a remote host is shown in full, bidi controls stripped, before the browser opens; an OSC 8 label cannot hide its target (#200, by @kblock1).
+- A loopback tunnel opened for a login binds 127.0.0.1 only, is never remapped, and gives the port back five minutes after a callback that never arrives (#200, by @kblock1).
+- Deleting a known host or a session log acts on the entry you clicked, however the list moved while the confirmation was open.
+- The MCP setup snippet masks the token and the embedded vault password until Show is pressed, and hides them again across a soft lock.
+- The SFTP console sanitizes the owner and group columns and refuses Windows device names (`CON`, `NUL`, `COM1`) and trailing dots as download targets.
+- A bulk download from the sidebar refuses a nested name it cannot place and reserves local space for the whole set first.
+- What a recording produces under a soft lock is spooled to disk sealed under a key that lives in the process alone, and lands in the vault at unlock.
+
+### Fixed
+- macOS no longer crashes under sustained output from a background tab: native notifications leave the UI thread (#217).
+- A local shell that exits no longer freezes its pane, on Windows included (#209, by @kblock1).
+- The SFTP New folder dialog takes the keyboard the moment it opens (#210, by @kblock1).
+- The tray's Quit and the update restart flush recordings and editor autosave like every other exit (#203, by @shideqin).
+- The tab context menu and its confirmations act on the tab they were opened over, however the strip moved meanwhile (#202, by @shideqin).
+- A soft auto-lock no longer stops a running recording, and the plain text mirror reports its own failure once instead of failing silently.
+- A pane that leaves its grid takes its Files browsing, plugin keepalive and relaunch with it (#216).
+- A toast waits for the window to be focused before it clears itself.
+- Mainland China learns of a new release as soon as it is published: the mirror's edge cache is purged on publish.
+- The MCP plugin 0.1.3 (published 2026-09-02) opens a vault created since 0.10.0 (#201).
+- Upstream: winit, iced and alacritty synced with their upstreams, the macOS IME commit flow among them.
+
 ## [0.16.0] - 2026-08-31
 
 An interactive SFTP console for people who would rather type than drag, opening as a pane of the session already in front of them, and an optional network tools panel for the questions asked while a host will not connect. Alongside them, East Asian ambiguous width becomes a per-host answer, the CJK font fix stops Chinese, Japanese and Korean labels from looking cut off, and a command proxy connects on Windows for the first time.
