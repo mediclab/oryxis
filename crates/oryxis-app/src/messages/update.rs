@@ -15,7 +15,10 @@ pub enum UpdateMessage {
     UpdateLater,
     UpdateStartDownload,
     UpdateDownloadProgress(f32),
-    UpdateDownloadComplete(Result<std::path::PathBuf, String>),
+    /// Carries the offer the download was started FOR: a check that
+    /// replaced `pending_update` meanwhile must not pair its own version
+    /// and artifact kind with this file.
+    UpdateDownloadComplete(Box<crate::update::UpdateInfo>, Result<std::path::PathBuf, String>),
     /// Apply the downloaded update and restart. From the modal's ready
     /// state it is the answer to the ask; from Settings > About it
     /// brings the offer back up so the ask can be put again.

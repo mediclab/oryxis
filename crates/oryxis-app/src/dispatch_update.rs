@@ -34,7 +34,7 @@ impl Oryxis {
                     | UpdateMessage::UpdateCheckResult(_)
                     | UpdateMessage::UpdateStartDownload
                     | UpdateMessage::UpdateDownloadProgress(_)
-                    | UpdateMessage::UpdateDownloadComplete(_)
+                    | UpdateMessage::UpdateDownloadComplete(_, _)
                     | UpdateMessage::UpdateInstallNow
             )
         {
@@ -231,6 +231,10 @@ impl Oryxis {
                 // download instead of jumping 0 to done. The sync
                 // progress closure forwards into the async sink via an
                 // unbounded channel.
+                // The offer rides the stream, so the completion names the
+                // version and artifact kind this file IS, whatever a check
+                // made of `pending_update` in the meantime.
+                let offer = info.clone();
                 let stream = iced::stream::channel::<Message>(
                     100,
                     move |mut sender: iced::futures::channel::mpsc::Sender<Message>| async move {
@@ -253,7 +257,10 @@ impl Oryxis {
                                     let result =
                                         res.unwrap_or_else(|e| Err(e.to_string()));
                                     let _ = sender
-                                        .send(Message::Update(UpdateMessage::UpdateDownloadComplete(result)))
+                                        .send(Message::Update(UpdateMessage::UpdateDownloadComplete(
+                                            Box::new(offer.clone()),
+                                            result,
+                                        )))
                                         .await;
                                     break;
                                 }
@@ -280,7 +287,7 @@ impl Oryxis {
                 }
                 return self.install_ready_update();
             }
-            UpdateMessage::UpdateDownloadComplete(result) => {
+            UpdateMessage::UpdateDownloadComplete(offer, result) => {
                 self.update_downloading = false;
                 match result {
                     Ok(path) => {
@@ -288,23 +295,14 @@ impl Oryxis {
                         // ready state: the artifact is kept, and whether
                         // it is installed now or after an ask is the
                         // close-window guard's call (`offer_update_install`).
-                        // An offer that went away while the download ran
-                        // (a check replaced it) leaves nothing to attach
-                        // the file to, so it is applied the way a stable
-                        // download always was, as an installer.
-                        match self.pending_update.clone() {
-                            Some(info) => {
-                                self.update_ready =
-                                    Some(crate::update::ReadyUpdate { info, path });
-                                return self.offer_update_install();
-                            }
-                            None => {
-                                return self.apply_update_artifact(
-                                    path,
-                                    crate::update::UpdateArtifact::Installer,
-                                );
-                            }
-                        }
+                        // The offer is the one the download was started
+                        // for, carried by the message, so a check that
+                        // replaced `pending_update` meanwhile (a channel
+                        // switch under the modal) cannot pair its own
+                        // artifact kind with this file.
+                        self.update_ready =
+                            Some(crate::update::ReadyUpdate { info: *offer, path });
+                        return self.offer_update_install();
                     }
                     Err(e) => self.update_error = Some(e),
                 }
