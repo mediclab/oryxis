@@ -35,6 +35,7 @@ impl Oryxis {
                     | UpdateMessage::UpdateStartDownload
                     | UpdateMessage::UpdateDownloadProgress(_)
                     | UpdateMessage::UpdateDownloadComplete(_)
+                    | UpdateMessage::UpdateInstallNow
             )
         {
             return Task::none();
@@ -191,6 +192,8 @@ impl Oryxis {
                     && let Some(vault) = &self.vault {
                     let _ = vault.set_setting("skipped_update_version", &info.version);
                 }
+                // A skipped version's download goes with it.
+                self.update_ready = None;
             }
             UpdateMessage::UpdateLater => {
                 self.pending_update = None;
@@ -204,6 +207,15 @@ impl Oryxis {
                 let Some(info) = self.pending_update.clone() else {
                     return Task::none();
                 };
+                // Already downloaded and waiting (the restart was declined
+                // earlier): install it rather than fetch it again.
+                if self
+                    .update_ready
+                    .as_ref()
+                    .is_some_and(|r| r.info.version == info.version)
+                {
+                    return self.offer_update_install();
+                }
                 let Some(url) = info.installer_url.clone() else {
                     self.update_error = Some("No installer asset for this platform".into());
                     return Task::none();
@@ -254,55 +266,44 @@ impl Oryxis {
             UpdateMessage::UpdateDownloadProgress(p) => {
                 self.update_progress = p;
             }
+            UpdateMessage::UpdateInstallNow => {
+                // From the modal's ready state this IS the answer to the
+                // ask. From Settings > About the modal is down, so the
+                // offer comes back up first and the gate decides as it
+                // did the first time: live sessions put the ask on
+                // screen, none means the restart goes ahead.
+                if self.pending_update.is_none()
+                    && let Some(ready) = &self.update_ready
+                {
+                    self.pending_update = Some(ready.info.clone());
+                    return self.offer_update_install();
+                }
+                return self.install_ready_update();
+            }
             UpdateMessage::UpdateDownloadComplete(result) => {
                 self.update_downloading = false;
                 match result {
                     Ok(path) => {
-                        // Nightly ships a bare binary we swap in place; a
-                        // portable stable extracts its exe from the zip and
-                        // takes the same swap; an AppImage replaces the
-                        // image file; an installed stable hands the
-                        // downloaded installer to the OS.
-                        use crate::update::UpdateArtifact;
-                        let apply = match self.pending_update.as_ref().map(|i| i.artifact) {
-                            Some(UpdateArtifact::Binary) => {
-                                crate::update::apply_binary_update(&path)
+                        // The download is only ever applied through the
+                        // ready state: the artifact is kept, and whether
+                        // it is installed now or after an ask is the
+                        // close-window guard's call (`offer_update_install`).
+                        // An offer that went away while the download ran
+                        // (a check replaced it) leaves nothing to attach
+                        // the file to, so it is applied the way a stable
+                        // download always was, as an installer.
+                        match self.pending_update.clone() {
+                            Some(info) => {
+                                self.update_ready =
+                                    Some(crate::update::ReadyUpdate { info, path });
+                                return self.offer_update_install();
                             }
-                            Some(UpdateArtifact::PortableArchive) => {
-                                crate::update::extract_portable_exe(&path)
-                                    .and_then(|exe| crate::update::apply_binary_update(&exe))
+                            None => {
+                                return self.apply_update_artifact(
+                                    path,
+                                    crate::update::UpdateArtifact::Installer,
+                                );
                             }
-                            Some(UpdateArtifact::AppImage) => {
-                                crate::update::apply_appimage_update(&path)
-                            }
-                            Some(UpdateArtifact::Installer) | None => {
-                                crate::update::launch_installer(&path)
-                            }
-                        };
-                        if let Err(e) = apply {
-                            self.update_error = Some(e);
-                        } else {
-                            // Installer launched (or new binary spawned),
-                            // exit so the old binary is released.
-                            self.pending_update = None;
-                            // This is an exit door of its own, NOT the
-                            // close path: `window::close` is the
-                            // programmatic action, which removes the
-                            // window directly instead of raising the
-                            // `CloseRequested` the close subscription
-                            // listens for, so nothing here passes
-                            // through `handle_window_close`. It takes
-                            // the same teardown by calling it, which
-                            // also puts the flushes ahead of an
-                            // installer that is already up and waiting
-                            // for this process to go.
-                            self.persist_before_exit();
-                            return self.drain_plugins_before_exit().then(|_| {
-                                iced::window::latest().then(|id_opt| match id_opt {
-                                    Some(id) => iced::window::close(id),
-                                    None => Task::none(),
-                                })
-                            });
                         }
                     }
                     Err(e) => self.update_error = Some(e),
@@ -310,5 +311,71 @@ impl Oryxis {
             }
         }
         Task::none()
+    }
+
+    /// The downloaded update is ready: install it now, or wait for the
+    /// user when installing would close live sessions.
+    ///
+    /// Installing means exiting, so it takes the close-window guard
+    /// (`confirm_close_session_tab`, the same opt-in every other close
+    /// door honours). With live sessions open the modal shows its ready
+    /// state and asks; otherwise the restart the user asked for a
+    /// download ago happens on its own.
+    fn offer_update_install(&mut self) -> Task<Message> {
+        if self.prefs.confirm_close_session_tab && self.live_session_tab_count() > 0 {
+            return Task::none();
+        }
+        self.install_ready_update()
+    }
+
+    /// Apply the waiting artifact (`update_ready`) and leave.
+    fn install_ready_update(&mut self) -> Task<Message> {
+        let Some(ready) = self.update_ready.clone() else {
+            return Task::none();
+        };
+        self.apply_update_artifact(ready.path, ready.info.artifact)
+    }
+
+    /// Hand the downloaded artifact to the OS and exit so the old
+    /// binary is released.
+    ///
+    /// Nightly ships a bare binary swapped in place; a portable stable
+    /// extracts its exe from the zip and takes the same swap; an
+    /// AppImage replaces the image file; an installed stable hands the
+    /// downloaded installer to the OS.
+    ///
+    /// This is an exit door of its own, NOT the close path:
+    /// `window::close` is the programmatic action, which removes the
+    /// window directly instead of raising the `CloseRequested` the
+    /// close subscription listens for, so nothing here passes through
+    /// `handle_window_close`. It takes the same teardown by calling it,
+    /// which also puts the flushes ahead of an installer that is
+    /// already up and waiting for this process to go.
+    fn apply_update_artifact(
+        &mut self,
+        path: std::path::PathBuf,
+        artifact: crate::update::UpdateArtifact,
+    ) -> Task<Message> {
+        use crate::update::UpdateArtifact;
+        let apply = match artifact {
+            UpdateArtifact::Binary => crate::update::apply_binary_update(&path),
+            UpdateArtifact::PortableArchive => crate::update::extract_portable_exe(&path)
+                .and_then(|exe| crate::update::apply_binary_update(&exe)),
+            UpdateArtifact::AppImage => crate::update::apply_appimage_update(&path),
+            UpdateArtifact::Installer => crate::update::launch_installer(&path),
+        };
+        if let Err(e) = apply {
+            self.update_error = Some(e);
+            return Task::none();
+        }
+        self.pending_update = None;
+        self.update_ready = None;
+        self.persist_before_exit();
+        self.drain_plugins_before_exit().then(|_| {
+            iced::window::latest().then(|id_opt| match id_opt {
+                Some(id) => iced::window::close(id),
+                None => Task::none(),
+            })
+        })
     }
 }

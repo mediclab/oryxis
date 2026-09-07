@@ -269,6 +269,34 @@ impl Oryxis {
             }
             None => Space::new().into(),
         };
+        // A downloaded update waiting for its restart (the ask was
+        // declined while sessions were live): the restart stays one
+        // click away here, so the download is not lost with the modal.
+        let ready_line: Element<'_, Message> = match &self.update_ready {
+            Some(ready) => {
+                let line = crate::widgets::dir_row(vec![
+                    text(t("update_ready").replacen("{new}", &ready.info.version, 1))
+                        .size(11)
+                        .color(OryxisColors::t().success)
+                        .into(),
+                    Space::new().width(10).into(),
+                    self.settings_nav_slot(
+                        crate::keynav::RowAction::activate(Message::Update(UpdateMessage::UpdateInstallNow)),
+                        6.0,
+                        styled_button(
+                            t("update_restart_now"),
+                            Message::Update(UpdateMessage::UpdateInstallNow),
+                            OryxisColors::t().accent,
+                        ),
+                    ),
+                ])
+                .align_y(iced::Alignment::Center);
+                container(line)
+                    .padding(Padding { top: 8.0, right: 0.0, bottom: 0.0, left: 0.0 })
+                    .into()
+            }
+            None => Space::new().into(),
+        };
         // Bleeding-edge warning, only while the nightly channel is
         // selected, so stable users don't see scary copy.
         let channel_note: Element<'_, Message> =
@@ -296,6 +324,7 @@ impl Oryxis {
             Space::new().height(10),
             check_now_btn,
             status_line,
+            ready_line,
         ])
     }
 }

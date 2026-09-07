@@ -1392,6 +1392,10 @@ pub struct Oryxis {
     pub(crate) update_downloading: bool,
     pub(crate) update_progress: f32,
     pub(crate) update_error: Option<String>,
+    /// A downloaded update waiting for its restart (`ReadyUpdate`):
+    /// installing means exiting, and with live sessions open that
+    /// takes the same opt-in ask every other close door does.
+    pub(crate) update_ready: Option<crate::update::ReadyUpdate>,
     /// Last manual-check outcome shown near the "Check now" button in
     /// settings. `None` hides the line; the enum picks i18n + color at
     /// render time (Checking / UpToDate / Failed(cause)).

@@ -16,5 +16,9 @@ pub enum UpdateMessage {
     UpdateStartDownload,
     UpdateDownloadProgress(f32),
     UpdateDownloadComplete(Result<std::path::PathBuf, String>),
+    /// Apply the downloaded update and restart. From the modal's ready
+    /// state it is the answer to the ask; from Settings > About it
+    /// brings the offer back up so the ask can be put again.
+    UpdateInstallNow,
     UpdateOpenRelease,
 }

@@ -583,6 +583,7 @@ impl Oryxis {
                 update_downloading: false,
                 update_progress: 0.0,
                 update_error: None,
+                update_ready: None,
                 update_check_status: None,
                 reconnect_counters: std::collections::HashMap::new(),
                 ai: crate::state::AiState::default(),

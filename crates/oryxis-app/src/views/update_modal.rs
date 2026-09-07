@@ -119,6 +119,47 @@ impl Oryxis {
                 bar,
             ]
             .into()
+        } else if self
+            .update_ready
+            .as_ref()
+            .is_some_and(|r| r.info.version == info.version)
+        {
+            // Downloaded and waiting: installing means restarting, and
+            // with live sessions open that is the ask itself, in the
+            // surface that is already up. Declining keeps the download.
+            let live = self.live_session_tab_count();
+            let mut lines = column![
+                text(t("update_ready").replacen("{new}", &info.version, 1))
+                    .size(12)
+                    .color(OryxisColors::t().text_primary),
+            ];
+            if live > 0 {
+                lines = lines.push(Space::new().height(4)).push(
+                    text(t("update_ready_sessions").replacen("{n}", &live.to_string(), 1))
+                        .size(11)
+                        .color(OryxisColors::t().warning),
+                );
+            }
+            column![
+                lines,
+                Space::new().height(12),
+                dir_row(vec![
+                    Space::new().width(Length::Fill).into(),
+                    styled_button(
+                        t("update_later"),
+                        Message::Update(UpdateMessage::UpdateLater),
+                        OryxisColors::t().bg_hover,
+                    ),
+                    Space::new().width(8).into(),
+                    styled_button(
+                        t("update_restart_now"),
+                        Message::Update(UpdateMessage::UpdateInstallNow),
+                        OryxisColors::t().accent,
+                    ),
+                ])
+                .align_y(iced::Alignment::Center),
+            ]
+            .into()
         } else {
             dir_row(vec![
                 styled_button(

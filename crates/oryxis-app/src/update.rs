@@ -153,6 +153,18 @@ pub struct UpdateInfo {
     pub artifact: UpdateArtifact,
 }
 
+/// An update whose artifact is downloaded and waiting to be applied.
+///
+/// Kept apart from the offer (`Oryxis::pending_update`) so declining
+/// the restart keeps the download: the next "Update now" for the same
+/// version installs it instead of fetching it again, and Settings >
+/// About offers the restart while it waits.
+#[derive(Debug, Clone)]
+pub struct ReadyUpdate {
+    pub info: UpdateInfo,
+    pub path: std::path::PathBuf,
+}
+
 /// Query the GitHub API for an available update on the given channel.
 /// `Ok(None)` means genuinely up to date; failures (network, HTTP,
 /// parse) come back as `Err` so callers can distinguish. The silent
