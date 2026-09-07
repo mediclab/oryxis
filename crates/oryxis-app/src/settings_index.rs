@@ -104,11 +104,6 @@ pub(crate) static SETTINGS_INDEX: &[SettingsIndexEntry] = &[
     e(S::Interface, "renderer_backend", "renderer graphics backend gpu vulkan opengl software"),
     e(S::Interface, "performance_mode", "performance mode fps battery speed"),
     e(S::Interface, "terminal_hints", "hints tips toast teaching links help"),
-    e(
-        S::Interface,
-        "pane_end_action",
-        "split pane session ended disconnected exited restart close",
-    ),
     // ── Terminal ───────────────────────────────────────────────────
     e(S::Terminal, "copy_on_select", "copy select clipboard mouse selection"),
     e(S::Terminal, "terminal_right_click", "right click paste context menu mouse"),
@@ -126,6 +121,11 @@ pub(crate) static SETTINGS_INDEX: &[SettingsIndexEntry] = &[
     e(S::Terminal, "bold_bright", "bold bright colors text intensity"),
     e(S::Terminal, "pane_border_inactive", "pane border outline split inactive unfocused separator divider"),
     e(S::Terminal, "pane_headers", "pane header title bar split label status close restart"),
+    e(
+        S::Terminal,
+        "pane_end_action",
+        "split pane session ended disconnected exited restart close",
+    ),
     e(S::Terminal, "pane_gap", "pane gap gutter spacing split padding between panes"),
     e(S::Terminal, "keyword_highlight", "keyword highlight color url ip path automatic"),
     e(S::Terminal, "highlight_rules", "highlight rules keyword pattern regex color trigger action notify beep sound snippet watch alert error warn"),

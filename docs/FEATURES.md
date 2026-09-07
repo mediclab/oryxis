@@ -197,11 +197,12 @@ coming next, see the [Roadmap](../README.md#roadmap).
 - **A pane ends on its own terms.** When one pane's session ends (a
   remote disconnect, a local shell that exited), the pane keeps what it
   was showing and offers to restart in place or close, without touching
-  its siblings; Settings > Interface picks whether that happens by hand
+  its siblings; Settings > Terminal picks whether that happens by hand
   or automatically.
 - **Closing asks first (opt-in).** A tab, the window or the tray's Quit
   with a live session behind it asks before ending it; off by default,
-  like most SSH clients.
+  like most SSH clients. A downloaded update waits the same way before
+  it restarts, and the download is kept if you say later.
 - **Session groups.** Save a split arrangement (panes + split tree +
   per-pane startup scripts) as a reusable, credential-free entity.
 - **Smart tabs.** A command that ran past a threshold and finished while
