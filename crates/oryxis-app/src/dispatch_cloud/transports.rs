@@ -31,8 +31,12 @@ impl Oryxis {
                 // itself, the order just keeps intent obvious).
                 let spec = self.tabs[tidx].pin_spec();
                 let tab = &mut self.tabs[tidx];
-                let reconnectable =
-                    tab.relaunch.is_some() && spec.is_some();
+                let reconnectable = spec.is_some()
+                    && tab
+                        .pane_grid
+                        .panes
+                        .values()
+                        .any(|p| p.id == pane_id && p.relaunch.is_some());
                 let hint = if reconnectable {
                     crate::i18n::t("cloud_session_ended_hint")
                 } else {

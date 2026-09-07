@@ -789,6 +789,9 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "pane_ended" => "انتهت الجلسة",
         "pane_ended_restart" => "إعادة التشغيل",
         "pane_ended_close" => "إغلاق الجزء",
+        "pane_exited" => "انتهى",
+        "pane_exited_code" => "انتهى بالرمز {code}",
+        "pane_exited_signal" => "أُنهي بالإشارة {signal}",
         "keyboard_shortcuts" => "اختصارات لوحة المفاتيح",
 
         // Session logs
@@ -1486,6 +1489,9 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "update_skip_version" => "تخطي هذا الإصدار",
         "update_later" => "لاحقًا",
         "update_now" => "تحديث الآن",
+        "update_ready" => "تم تنزيل Oryxis {new} وهو جاهز للتثبيت.",
+        "update_ready_sessions" => "إعادة التشغيل الآن تغلق {n} من الجلسات النشطة.",
+        "update_restart_now" => "إعادة التشغيل الآن",
         "ip_or_hostname" => "IP أو اسم المضيف",
         "my_server_placeholder" => "خادمي",
         "group_placeholder" => "Production, Staging...",

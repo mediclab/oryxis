@@ -348,11 +348,9 @@ impl Oryxis {
             // draw snap back, but no draw fires while the tab is
             // off-screen). Explicit so a refocus is always clean.
             if let Some((cols, rows)) = self.ssm_keepalive_base.take() {
-                for tab in self.tabs.iter().filter(|t| t.ssm_keepalive) {
-                    for pane in tab.pane_grid.panes.values() {
-                        if let Ok(mut state) = pane.terminal.lock() {
-                            state.resize(cols, rows);
-                        }
+                for pane in self.plugin_panes() {
+                    if let Ok(mut state) = pane.terminal.lock() {
+                        state.resize(cols, rows);
                     }
                 }
             }
@@ -380,20 +378,15 @@ impl Oryxis {
             // MRU tracking until the next real Ctrl-release).
             self.commit_tab_cycle();
             // Anchor the keepalive toggle to the size the window
-            // had when it lost focus. All plugin tabs share the
+            // had when it lost focus. All plugin panes share the
             // window, so the first one's size is representative.
-            self.ssm_keepalive_base = self
-                .tabs
-                .iter()
-                .filter(|t| t.ssm_keepalive)
-                .find_map(|t| {
-                    t.pane_grid.panes.values().next().and_then(|p| {
-                        p.terminal
-                            .lock()
-                            .ok()
-                            .map(|s| (s.cols(), s.rows()))
-                    })
-                });
+            let base = self.plugin_panes().find_map(|p| {
+                p.terminal
+                    .lock()
+                    .ok()
+                    .map(|s| (s.cols(), s.rows()))
+            });
+            self.ssm_keepalive_base = base;
         }
         Task::none()
     }
@@ -500,6 +493,18 @@ impl Oryxis {
             }
         }
         self.close_window_now()
+    }
+
+    /// Every plugin-backed pane in every tab (`Pane::plugin_backed`),
+    /// which is the set the idle keepalive nudges. The nudge is a
+    /// resize, so it stays off the SSH and local panes that share a
+    /// split with a plugin one: those have nothing to keep alive and
+    /// would only see their layout twitch.
+    pub(crate) fn plugin_panes(&self) -> impl Iterator<Item = &crate::state::Pane> {
+        self.tabs
+            .iter()
+            .flat_map(|t| t.pane_grid.panes.values())
+            .filter(|p| p.plugin_backed)
     }
 
     /// Whether the close verb hides the window instead of ending the

@@ -120,7 +120,8 @@ pub enum TerminalMessage {
     /// pane's `TerminalState` drops the old PTY, so a restart-in-place
     /// ends the OLD session and this message arrives for a pane that is
     /// alive again. A stale generation is discarded.
-    LocalPaneEnded(Uuid, u64),
+    /// The third field is how the shell ended, when the OS said.
+    LocalPaneEnded(Uuid, u64, Option<oryxis_terminal::ChildExit>),
     /// Move focus to the adjacent pane in a direction (keyboard nav).
     FocusPaneDir(iced::widget::pane_grid::Direction),
     /// Expand the focused pane to the whole tab, and back. `None` targets

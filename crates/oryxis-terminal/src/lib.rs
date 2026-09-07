@@ -26,7 +26,7 @@ pub use widget::{
     take_privacy_mask_drawn, wrap_paste, Backdrop, BackgroundImage, BgFit, HoveredLink,
     NetHud, PrivacyClasses, RegionText, RightClickAction, TerminalState, TerminalView,
 };
-pub use pty::PtyHandle;
+pub use pty::{ChildExit, PtyHandle};
 
 /// DECRST/DECSET sequence the app feeds a pane when its session ends
 /// and again when a fresh one attaches (`dispatch_ssh::session`).

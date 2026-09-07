@@ -221,12 +221,15 @@ impl Oryxis {
                     label.clone(),
                     Arc::new(Mutex::new(state)),
                 );
-                // Cloud SSM / ECS tabs get the idle keepalive (see the
-                // field doc on `TerminalTab`).
-                plugin_tab.ssm_keepalive = true;
-                // Cloud tabs without a saved Connection carry the message
-                // that re-creates them, so Duplicate Tab can relaunch.
-                plugin_tab.relaunch = relaunch.map(Box::new);
+                // The PANE is plugin-backed (see `Pane::plugin_backed`):
+                // that is what gives it the idle keepalive and keeps a
+                // link on it from being read as local. Without a saved
+                // Connection it also carries the message that re-creates
+                // it, so Duplicate Tab and the dormant reopen can
+                // relaunch. Both travel with the pane if it leaves.
+                let pane = plugin_tab.active_mut();
+                pane.plugin_backed = true;
+                pane.relaunch = relaunch.map(Box::new);
                 let pane_id = plugin_tab.active().id;
                 self.tabs.push(plugin_tab);
                 // SSM/ECS sessions don't go through the SSH connecting

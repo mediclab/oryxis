@@ -65,7 +65,7 @@ settle 1200
 type "exit"
 type enter
 settle 1400
-expect "bash (default) (disconnected)"
+expect "bash (default) (exited)"
 screenshot pane-drag-before
 # Drag the LIVE pane by its header, onto the grid's bottom edge: the
 # side-by-side split becomes a stacked one.
@@ -89,6 +89,6 @@ release (900, 700)
 settle 900
 # Both panes came through the move intact: the dead one still reports
 # the end of its session, and the live one is still here.
-expect "bash (default) (disconnected)"
+expect "bash (default) (exited)"
 expect "bash (default)"
 screenshot pane-drag-stacked

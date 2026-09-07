@@ -218,16 +218,14 @@ impl Oryxis {
                 // ticker shouldn't be mounted then), so it's a no-op.
                 if let Some((base_cols, base_rows)) = self.ssm_keepalive_base {
                     let shrunk = base_rows.saturating_sub(1).max(2);
-                    for tab in self.tabs.iter().filter(|t| t.ssm_keepalive) {
-                        for pane in tab.pane_grid.panes.values() {
-                            if let Ok(mut state) = pane.terminal.lock() {
-                                let target = if state.rows() == base_rows {
-                                    shrunk
-                                } else {
-                                    base_rows
-                                };
-                                state.resize(base_cols, target);
-                            }
+                    for pane in self.plugin_panes() {
+                        if let Ok(mut state) = pane.terminal.lock() {
+                            let target = if state.rows() == base_rows {
+                                shrunk
+                            } else {
+                                base_rows
+                            };
+                            state.resize(base_cols, target);
                         }
                     }
                 }

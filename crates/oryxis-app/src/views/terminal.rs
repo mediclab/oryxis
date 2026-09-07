@@ -906,7 +906,7 @@ impl Oryxis {
     ) -> iced::widget::pane_grid::TitleBar<'a, Message> {
         let colors = OryxisColors::t();
         let pane_id = pane.id;
-        let state = crate::tab_conn_state::derive_pane_conn_state(tab, pane);
+        let state = crate::tab_conn_state::derive_pane_conn_state(pane);
 
         // Privacy Mode redacts the pane name the way the chip and the
         // link chip already do. The LOOKUP is `pane.label`, never the
@@ -922,7 +922,14 @@ impl Oryxis {
         // and it is the wording the tab already uses when it is the one
         // that died.
         if state == crate::tab_conn_state::TabConnState::Lost {
-            label = format!("{label} ({})", t("status_bar_disconnected"));
+            // The pane's own verdict when it recorded one (a local shell
+            // says how it exited); the tab's word otherwise.
+            let words = pane
+                .end_verdict
+                .as_ref()
+                .map(crate::state::PaneEndVerdict::text)
+                .unwrap_or_else(|| t("status_bar_disconnected").to_string());
+            label = format!("{label} ({words})");
         }
         let label = truncate_middle(&label, 42);
 

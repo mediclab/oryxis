@@ -5,6 +5,16 @@ use tokio::sync::mpsc;
 
 use crate::backend::EventProxy;
 
+/// How a PTY child ended, as the OS reported it: the exit code, or the
+/// name of the signal that took it down (unix only; `code` is then
+/// whatever the platform pairs with the signal). Carried by the exit
+/// signal `PtyHandle::take_child_exit` hands out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildExit {
+    pub code: u32,
+    pub signal: Option<String>,
+}
+
 /// Handle to a running PTY child process.
 pub struct PtyHandle {
     /// Single channel funnelling every byte that needs to reach the
@@ -44,7 +54,7 @@ pub struct PtyHandle {
     /// stays blocked until the whole handle is dropped, which can be
     /// minutes after the shell died. Anything driven off the byte
     /// stream is therefore reporting teardown, not exit.
-    child_exit: Option<tokio::sync::oneshot::Receiver<()>>,
+    child_exit: Option<tokio::sync::oneshot::Receiver<Option<ChildExit>>>,
 }
 
 impl Drop for PtyHandle {
@@ -152,7 +162,7 @@ impl PtyHandle {
         // kill sent from the handle's own thread could reach a pid the
         // kernel had already handed to someone else.
         let slave = pair.slave;
-        let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
+        let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<Option<ChildExit>>();
         let waiter_label = program.unwrap_or("<default>").to_string();
         std::thread::Builder::new()
             .name("pty-waiter".into())
@@ -189,7 +199,15 @@ impl PtyHandle {
                     "PTY child exited for {} ({:?})",
                     waiter_label, status,
                 );
-                let _ = exit_tx.send(());
+                // The status travels with the signal, so the pane can
+                // say HOW the shell ended and not only that it did. A
+                // failed `wait` still ends the pane; it just ends it
+                // with nothing to report.
+                let exit = status.ok().map(|s| ChildExit {
+                    code: s.exit_code(),
+                    signal: s.signal().map(str::to_string),
+                });
+                let _ = exit_tx.send(exit);
                 drop(slave);
             })?;
 
@@ -322,8 +340,12 @@ impl PtyHandle {
     }
 
     /// Take the child-exit signal, once. `None` on every later call, so
-    /// two callers cannot both believe they are the one being told.
-    pub fn take_child_exit(&mut self) -> Option<tokio::sync::oneshot::Receiver<()>> {
+    /// two callers cannot both believe they are the one being told. The
+    /// value it resolves with is the child's exit status, or `None` when
+    /// the wait itself failed.
+    pub fn take_child_exit(
+        &mut self,
+    ) -> Option<tokio::sync::oneshot::Receiver<Option<ChildExit>>> {
         self.child_exit.take()
     }
 

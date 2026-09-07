@@ -46,6 +46,6 @@ screenshot pane-header-split
 type "exit"
 type enter
 settle 1400
-expect "bash (default) (disconnected)"
+expect "bash (default) (exited)"
 absent "Session ended"
 screenshot pane-header-ended

@@ -53,7 +53,7 @@ settle 300
 type "exit"
 type enter
 settle 1400
-expect "bash (default) (disconnected)"
+expect "bash (default) (exited)"
 expect "Broadcast"
 # A third tab to drop onto, then back to the split.
 click (438, 11)
@@ -77,7 +77,7 @@ settle 900
 # The view followed the pane into the destination split, and the pane
 # arrived whole: its header still says how its session ended.
 expect "Broadcast"
-expect "bash (default) (disconnected)"
+expect "bash (default) (exited)"
 screenshot pane-out-of-grid-dropped
 # Tab menu: the arriving pane took the focus, so the row breaks it out
 # again, into a lone tab of its own where its card answers for it.

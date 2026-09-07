@@ -304,7 +304,7 @@ impl Oryxis {
                     // Relaunch message so Duplicate Tab can recreate this
                     // ad-hoc session. "Duplicate in New Window" auto-hides
                     // on it (a child process cannot resolve an unsaved id).
-                    new_tab.relaunch =
+                    new_tab.active_mut().relaunch =
                         Some(Box::new(Message::Ssh(SshMessage::QuickConnect(Box::new(entry.clone())))));
                 }
                 // Stable id of this tab's pane: PTY output and

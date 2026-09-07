@@ -562,7 +562,7 @@ impl Oryxis {
         // SSM idle timeout below ~5 min would need the server-side
         // setting raised instead.
         if !self.window_focused
-            && self.tabs.iter().any(|t| t.ssm_keepalive)
+            && self.tabs.iter().any(|t| t.ssm_keepalive())
         {
             subs.push(
                 iced::time::every(std::time::Duration::from_secs(240))

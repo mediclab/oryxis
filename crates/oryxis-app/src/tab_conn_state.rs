@@ -118,7 +118,7 @@ pub(crate) fn derive_conn_state(
     if tab.label.ends_with(" (disconnected)") {
         return TabConnState::Lost;
     }
-    derive_pane_conn_state(tab, pane)
+    derive_pane_conn_state(pane)
 }
 
 /// Derive ONE pane's state, for the surfaces that describe a pane
@@ -128,9 +128,9 @@ pub(crate) fn derive_conn_state(
 /// spent by the time it calls here: a dial in flight belongs to a tab
 /// and carries no pane id, and the "(disconnected)" label suffix is
 /// written on a tab and never on a split one. What is left is the pane
-/// itself, plus `tab` for the one question a pane cannot answer alone
-/// (a plugin-backed transport is a process the TAB owns).
-pub(crate) fn derive_pane_conn_state(tab: &TerminalTab, pane: &Pane) -> TabConnState {
+/// itself, and a plugin-backed transport is a fact the pane carries
+/// (`Pane::plugin_backed`).
+pub(crate) fn derive_pane_conn_state(pane: &Pane) -> TabConnState {
     // Reached directly by the header, and already spent when the tab
     // derivation delegates here. Both readings are the same.
     if pane.connecting {
@@ -170,7 +170,7 @@ pub(crate) fn derive_pane_conn_state(tab: &TerminalTab, pane: &Pane) -> TabConnS
     if matches!(pane.origin, PaneOrigin::Local(_)) {
         return TabConnState::Idle;
     }
-    if tab.is_plugin_backed() {
+    if pane.plugin_backed {
         // Live by elimination: a dead plugin tab carries the suffix
         // the tab derivation handles.
         return TabConnState::Connected;
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn a_disconnected_label_reads_as_lost() {
         let mut t = tab("ECS · api (disconnected)");
-        t.ssm_keepalive = true;
+        t.active_mut().plugin_backed = true;
         assert_eq!(derive_conn_state(&t, DialProgress::None), TabConnState::Lost);
     }
 
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn a_live_plugin_tab_reads_as_connected() {
         let mut t = tab("ECS · api (abc12345)");
-        t.ssm_keepalive = true;
+        t.active_mut().plugin_backed = true;
         assert_eq!(derive_conn_state(&t, DialProgress::None), TabConnState::Connected);
     }
 
@@ -282,7 +282,7 @@ mod tests {
         });
         t.active_mut().ended = true;
         let pane = t.active();
-        assert_eq!(derive_pane_conn_state(&t, pane), TabConnState::Lost);
+        assert_eq!(derive_pane_conn_state(pane), TabConnState::Lost);
         assert_eq!(derive_conn_state(&t, DialProgress::None), TabConnState::Lost);
     }
 

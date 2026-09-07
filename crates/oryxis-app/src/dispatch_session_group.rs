@@ -36,7 +36,7 @@ struct PendingLocal {
     rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     /// The pane's child-exit signal, taken at spawn time because the
     /// `TerminalState` is wrapped for the pane in the same breath.
-    exited: Option<tokio::sync::oneshot::Receiver<()>>,
+    exited: Option<tokio::sync::oneshot::Receiver<Option<oryxis_terminal::ChildExit>>>,
 }
 
 #[derive(Default)]
@@ -441,8 +441,6 @@ impl Oryxis {
             chat_last_md_parse: None,
             chat_saved_id: None,
             chat_persisted: 0,
-            ssm_keepalive: false,
-            relaunch: None,
             session_group_id: Some(group.id),
             pinned: false,
             pending_reopen: None,

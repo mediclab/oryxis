@@ -330,8 +330,6 @@ mod tests {
             chat_last_md_parse: None,
             chat_saved_id: None,
             chat_persisted: 0,
-            ssm_keepalive: false,
-            relaunch: None,
             session_group_id: None,
             pinned: false,
             pending_reopen: None,

@@ -869,6 +869,45 @@ impl Oryxis {
         }
     }
 
+    /// The Files browsing a tab keeps for ONE of its panes' sessions,
+    /// taken out of the tab when that pane leaves it.
+    ///
+    /// A tab's `files_state` is an SFTP channel multiplexed on the SSH
+    /// session of `sftp_source()`, so it belongs with that pane's
+    /// session rather than with the tab: a pane moving out takes the
+    /// browsing with it, and a pane closing takes it down. Answers
+    /// `None`, leaving the tab untouched, when `pane_id` is not the pane
+    /// the surface resolves against or when the tab has no SFTP session
+    /// at all. Must be asked BEFORE `take_pane`: the source resolves
+    /// differently once the pane is gone.
+    ///
+    /// The state comes home first (parked out of the live buffer when
+    /// this tab owns it), the tab leaves Files mode, and an inherited
+    /// SFTP pin stops describing it, the same three steps
+    /// `close_tab_sftp_session` takes. Returns whether the tab was
+    /// SHOWING Files, so a pane broken out into a tab of its own can
+    /// arrive showing the same surface.
+    pub(crate) fn take_tab_files_backed_by(
+        &mut self,
+        tab_idx: usize,
+        pane_id: uuid::Uuid,
+    ) -> Option<(bool, Box<crate::state::SftpState>)> {
+        let tab = self.tabs.get(tab_idx)?;
+        if tab.sftp_source().id != pane_id || !self.tab_has_sftp_session(tab) {
+            return None;
+        }
+        let tab_id = tab._id;
+        if self.hybrid_sftp_owner == Some(tab_id) {
+            self.park_hybrid_sftp();
+        }
+        // A one-shot directory hint aimed at this surface dies with it.
+        self.sftp_open_at_path = None;
+        let tab = &mut self.tabs[tab_idx];
+        let showing = std::mem::replace(&mut tab.files_mode, false);
+        tab.inherited_pin = None;
+        Some((showing, std::mem::take(&mut tab.files_state)))
+    }
+
     /// Make the hybrid terminal tab `tab_id` the owner of the live
     /// `self.sftp` buffer: park whichever owner (hybrid or standalone)
     /// holds it, then hoist this tab's `files_state`. No-op when it

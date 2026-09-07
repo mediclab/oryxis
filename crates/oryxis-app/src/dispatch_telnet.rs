@@ -152,7 +152,7 @@ impl Oryxis {
         if let crate::state::ProgressOrigin::Quick(id) = origin
             && let Some(entry) = self.quick_connects.get(&id)
         {
-            new_tab.relaunch = Some(Box::new(Message::Ssh(SshMessage::QuickConnect(Box::new(entry.clone())))));
+            new_tab.active_mut().relaunch = Some(Box::new(Message::Ssh(SshMessage::QuickConnect(Box::new(entry.clone())))));
         }
         let pane_id = new_tab.active().id;
         self.tabs.push(new_tab);

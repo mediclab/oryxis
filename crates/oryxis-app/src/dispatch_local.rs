@@ -289,7 +289,7 @@ impl Oryxis {
         if let crate::state::ProgressOrigin::Quick(id) = origin
             && let Some(entry) = self.quick_connects.get(&id)
         {
-            new_tab.relaunch = Some(Box::new(Message::Ssh(
+            new_tab.active_mut().relaunch = Some(Box::new(Message::Ssh(
                 crate::app::SshMessage::QuickConnect(Box::new(entry.clone())),
             )));
         }

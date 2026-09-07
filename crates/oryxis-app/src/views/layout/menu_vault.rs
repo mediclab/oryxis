@@ -414,7 +414,7 @@ impl Oryxis {
         let new_window_ok = self
             .tabs
             .get(idx)
-            .map(|t| t.relaunch.is_none())
+            .map(|t| t.active().relaunch.is_none())
             .unwrap_or(true);
         if new_window_ok {
             items.push(self.menu_item(iced_fonts::lucide::external_link(), crate::i18n::t("duplicate_new_window"), Message::Tabs(TabsMessage::DuplicateInNewWindow(idx)), OryxisColors::t().text_secondary));

@@ -86,18 +86,6 @@ pub(crate) struct TerminalTab {
     /// pending-tool bubble is popped), which is why the flush compares
     /// against the current length instead of trusting this blindly.
     pub chat_persisted: usize,
-    /// True for cloud SSM / ECS-Exec tabs (a `session-manager-plugin`
-    /// PTY). These talk SSM over a websocket whose idle timer kills the
-    /// session after ~20 min of inactivity, so they get the
-    /// resize-based keepalive while the window is unfocused. Plain SSH /
-    /// local tabs leave this `false`.
-    pub ssm_keepalive: bool,
-    /// Message that re-creates this session, for "Duplicate Tab". Set
-    /// only for cloud tabs that have no saved `Connection` to look up
-    /// by label (ECS Exec, kubectl pod). SSH / InstanceConnect / SSM
-    /// tabs are connection-backed and duplicate via label lookup
-    /// instead, so they leave this `None`.
-    pub relaunch: Option<Box<crate::messages::Message>>,
     /// Set when this tab was opened from a saved session group (or just
     /// saved as one). Drives the tab context menu label ("Save group" vs
     /// "Edit group") and lets the editor update the existing group in place.
@@ -524,9 +512,9 @@ impl TerminalTab {
     ///
     /// Everything a tab owns that the pane does not is deliberately
     /// default: the chat, the pin, the reopen spec and the session-group
-    /// membership belong to the tab the pane LEFT, not to the pane. The
-    /// one exception is decided by the caller, which carries
-    /// `ssm_keepalive` over when the source had it.
+    /// membership belong to the tab the pane LEFT, not to the pane. What
+    /// describes the pane's own session (its relaunch message, whether
+    /// it is plugin-backed) lives on the pane and arrives with it.
     pub fn adopting(pane: Pane) -> Self {
         let label = pane.label.clone();
         let (pane_grid, focused) = pane_grid::State::new(pane);
@@ -547,8 +535,6 @@ impl TerminalTab {
             chat_last_md_parse: None,
             chat_saved_id: None,
             chat_persisted: 0,
-            ssm_keepalive: false,
-            relaunch: None,
             session_group_id: None,
             pinned: false,
             pending_reopen: None,
@@ -621,7 +607,7 @@ impl TerminalTab {
             // relaunch message that recreates them; mirror it into a
             // serializable spec. SSM (relaunch None) and anything else stay
             // unpersisted.
-            PaneOrigin::Ephemeral => match self.relaunch.as_deref() {
+            PaneOrigin::Ephemeral => match self.active().relaunch.as_deref() {
                 Some(crate::messages::Message::Cloud(CloudMessage::ConnectEcsExecTask {
                     group_id,
                     task_id,
@@ -743,16 +729,14 @@ impl TerminalTab {
         }
     }
 
-    /// True for plugin-backed cloud tabs (ECS Exec / SSM Session /
-    /// `kubectl exec`): the session is a local `session-manager-plugin`
-    /// or `kubectl` process on a PTY, so the pane carries no `session`
-    /// handle and the tab reads as sessionless to anything that looks
-    /// for one. `spawn_plugin_tab` is the only thing that raises
-    /// `ssm_keepalive`, which is why that flag doubles as the marker
-    /// (the keepalive is a consequence of being plugin-backed, not a
-    /// separate fact).
-    pub fn is_plugin_backed(&self) -> bool {
-        self.ssm_keepalive
+    /// Whether this tab holds a plugin-backed pane (ECS Exec / SSM
+    /// Session / `kubectl exec`, see `Pane::plugin_backed`), which is
+    /// what decides whether the idle keepalive runs for it. Derived from
+    /// the panes rather than stored: a plugin pane that moves to another
+    /// tab takes the answer with it, and the tab it left stops nudging
+    /// panes that never needed it.
+    pub fn ssm_keepalive(&self) -> bool {
+        self.pane_grid.panes.values().any(|p| p.plugin_backed)
     }
 
     /// Currently focused pane. Falls back to the first pane if `focused`
@@ -1122,6 +1106,23 @@ mod terminal_tab_tests {
 
     fn dummy_terminal() -> Arc<Mutex<TerminalState>> {
         Arc::new(Mutex::new(TerminalState::new_no_pty(80, 24).unwrap()))
+    }
+
+    /// The keepalive is a fact of the plugin PANE. A plugin pane that
+    /// leaves a split takes it into its new tab, and the tab it left
+    /// stops nudging panes that never needed it.
+    #[test]
+    fn a_plugin_pane_takes_the_keepalive_with_it() {
+        let mut tab = TerminalTab::new_single("ssm".into(), dummy_terminal());
+        let plugin = tab.focused;
+        tab.pane_grid.get_mut(plugin).unwrap().plugin_backed = true;
+        let _ssh = split(&mut tab, pane_grid::Axis::Horizontal);
+        assert!(tab.ssm_keepalive(), "a split holding a plugin pane keeps it alive");
+
+        let pane = tab.take_pane(plugin).expect("the plugin pane left");
+        assert!(!tab.ssm_keepalive(), "the tab kept a keepalive for a pane it lost");
+        let own = TerminalTab::adopting(pane);
+        assert!(own.ssm_keepalive(), "the plugin pane lost its keepalive on the way out");
     }
 
     fn split(tab: &mut TerminalTab, axis: pane_grid::Axis) -> pane_grid::Pane {

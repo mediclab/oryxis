@@ -55,7 +55,7 @@ impl Oryxis {
     pub(crate) fn local_pane_stream(
         &mut self,
         pane_id: Uuid,
-        exited: Option<tokio::sync::oneshot::Receiver<()>>,
+        exited: Option<tokio::sync::oneshot::Receiver<Option<oryxis_terminal::ChildExit>>>,
         rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     ) -> Task<Message> {
         let output = Task::stream(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
@@ -71,11 +71,11 @@ impl Oryxis {
         Task::batch([
             output,
             Task::perform(
-                async move {
-                    let _ = exited.await;
-                },
-                move |()| {
-                    Message::Terminal(TerminalMessage::LocalPaneEnded(pane_id, generation))
+                // A dropped sender (the handle went away first) ends the
+                // pane like an exit with nothing to report.
+                async move { exited.await.ok().flatten() },
+                move |exit| {
+                    Message::Terminal(TerminalMessage::LocalPaneEnded(pane_id, generation, exit))
                 },
             ),
         ])
@@ -93,7 +93,11 @@ impl Oryxis {
     /// Callers on the remote path have already done the session teardown
     /// by the time they reach here; the local path has its own, since a
     /// PTY leaves no transport handle behind to close.
-    pub(crate) fn note_pane_ended(&mut self, pane_id: Uuid) -> Task<Message> {
+    pub(crate) fn note_pane_ended(
+        &mut self,
+        pane_id: Uuid,
+        verdict: crate::state::PaneEndVerdict,
+    ) -> Task<Message> {
         let Some(tab_idx) = self.pane_tab_index(pane_id) else {
             return Task::none();
         };
@@ -130,8 +134,13 @@ impl Oryxis {
         }
         if let Some(pane) = self.tabs[tab_idx].pane_by_id_mut(pane_id) {
             pane.ended = true;
+            // Said in the grid in the words the header uses, so a local
+            // shell reads "exited with code 1" where a remote pane reads
+            // "disconnected".
+            let notice = format!("\r\n[{}]\r\n", verdict.text());
+            pane.end_verdict = Some(verdict);
             if let Ok(mut state) = pane.terminal.lock() {
-                state.process(b"\r\n[disconnected]\r\n");
+                state.process(notice.as_bytes());
             }
         }
         Task::none()
@@ -175,6 +184,7 @@ impl Oryxis {
             }
             pane.id = new_pane_id;
             pane.ended = false;
+            pane.end_verdict = None;
             pane.connecting = true;
             if let Ok(mut state) = pane.terminal.lock() {
                 // Dim marker, so the restart reads as a continuation of

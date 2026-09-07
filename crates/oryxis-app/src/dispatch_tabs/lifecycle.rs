@@ -692,7 +692,7 @@ impl Oryxis {
             } else if let Some(entry) = quick_entry {
                 Some(Message::Ssh(SshMessage::QuickConnect(Box::new(entry))))
             } else if local_respawn.is_none() {
-                tab.relaunch.as_deref().cloned()
+                tab.active().relaunch.as_deref().cloned()
             } else {
                 None
             };
@@ -809,7 +809,7 @@ impl Oryxis {
             }
             // Cloud tabs with no saved connection (ECS Exec,
             // kubectl pod) carry the message that re-opens them.
-            if let Some(relaunch) = tab.relaunch.as_deref() {
+            if let Some(relaunch) = tab.active().relaunch.as_deref() {
                 let msg = relaunch.clone();
                 self.arm_tab_placement(source_id);
                 return Task::done(msg);

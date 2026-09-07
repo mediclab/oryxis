@@ -433,7 +433,7 @@ impl Oryxis {
                     // verdict goes on the PANE instead, which is what gives it
                     // a restart and a close of its own (issue #208).
                     if self.tabs[tab_idx].pane_grid.panes.len() > 1 {
-                        return self.note_pane_ended(pane_id);
+                        return self.note_pane_ended(pane_id, crate::state::PaneEndVerdict::Disconnected);
                     }
                     self.tabs[tab_idx].label = format!("{} (disconnected)", label);
                     // Surface the disconnect to the user. Without this the
@@ -487,6 +487,7 @@ impl Oryxis {
                     // it here whichever path dialled the replacement,
                     // not just the restart button's (issue #208).
                     pane.ended = false;
+                    pane.end_verdict = None;
                     if let Ok(mut state) = pane.terminal.lock() {
                         // Whatever armed the emulator's modes died with
                         // the previous session, and the fresh shell never
