@@ -310,7 +310,10 @@ impl Oryxis {
 
     /// Run a local host in an existing pane (a split, or an in-place
     /// reconnect after its shell exited). The pane keeps its identity,
-    /// its history and its recording; only the PTY behind it is new.
+    /// its history, its recording AND its terminal: the shell is spawned
+    /// into the grid the pane already draws, so a restart continues
+    /// under the output the user was reading, the way a remote reconnect
+    /// does.
     pub(crate) fn spawn_local_for_pane_conn(
         &mut self,
         conn: oryxis_core::models::Connection,
@@ -321,7 +324,36 @@ impl Oryxis {
             Ok(pick) => pick,
             Err(e) => return self.local_pick_failed(e),
         };
-        let (mut state, rx) = match self.spawn_local_state(&conn, &pick) {
+        let palette = self.resolve_terminal_palette_for_connection(&conn);
+        let cwd = Self::local_cwd(&conn);
+        let env = Self::local_env(&conn);
+        let Some(terminal) = self
+            .tabs
+            .get(tab_idx)
+            .and_then(|t| t.pane_by_id(pane_id))
+            .map(|p| p.terminal.clone())
+        else {
+            return Task::none();
+        };
+        let spawned = match terminal.lock() {
+            Ok(mut state) => {
+                let spawned = match &pick {
+                    Some((program, args, _)) => state.respawn_command_env(
+                        Some(program),
+                        args,
+                        cwd.as_deref(),
+                        &env,
+                    ),
+                    None => state.respawn_command_env(None, &[], cwd.as_deref(), &env),
+                };
+                if spawned.is_ok() {
+                    state.set_palette(palette);
+                }
+                spawned.map(|rx| (rx, state.pty.as_mut().and_then(|p| p.take_child_exit())))
+            }
+            Err(_) => return Task::none(),
+        };
+        let (rx, exited) = match spawned {
             Ok(spawned) => spawned,
             Err(e) => {
                 tracing::error!("Failed to spawn local host \"{}\" into pane: {e}", conn.label);
@@ -331,8 +363,6 @@ impl Oryxis {
                 )));
             }
         };
-        state.set_palette(self.resolve_terminal_palette_for_connection(&conn));
-        let exited = state.pty.as_mut().and_then(|p| p.take_child_exit());
 
         let session_log_id = if self.should_record_session(Some(&conn)) {
             self.vault.as_ref().map(|v| {
@@ -351,10 +381,6 @@ impl Oryxis {
         let Some(pane) = self.tabs.get_mut(tab_idx).and_then(|t| t.pane_by_id_mut(pane_id)) else {
             return Task::none();
         };
-        // The pane's terminal is swapped wholesale rather than mutated:
-        // a `TerminalState` owns its PTY, and the widget re-reads the
-        // pane's Arc every frame, so this is the whole handover.
-        pane.terminal = Arc::new(Mutex::new(state));
         // Nothing is being dialled: a local shell is live the moment its
         // PTY exists, and only `SshConnected` / `SshDisconnected` /
         // `PaneConnectError` ever clear this flag, none of which a PTY
@@ -363,8 +389,11 @@ impl Oryxis {
         // "Reconnecting" for good and every later Reconnect on the tab
         // is refused as a dial already in flight. The Telnet and Serial
         // arms of the same switch need no such line: both go on to send
-        // `SshConnected`.
+        // `SshConnected`. The verdict goes with the flag: this shell
+        // replaces the one the pane was reporting on.
         pane.connecting = false;
+        pane.ended = false;
+        pane.end_verdict = None;
         if let Some(log_id) = session_log_id {
             pane.start_session_log(log_id);
         }
@@ -394,18 +423,30 @@ impl Oryxis {
             .get(tab_idx)
             .and_then(|t| t.pane_by_id(pane_id))
             .and_then(|p| p.cwd.clone());
-        let spawned = if spec.program.is_empty() {
-            TerminalState::new(DEFAULT_TERM_COLS as u16, DEFAULT_TERM_ROWS as u16, cwd.as_deref())
-        } else {
-            TerminalState::new_with_command(
-                DEFAULT_TERM_COLS as u16,
-                DEFAULT_TERM_ROWS as u16,
-                &spec.program,
-                &spec.args,
-                cwd.as_deref(),
-            )
+        // Spawned INTO the pane's own terminal, so the scrollback the
+        // user was reading stays and the new shell continues below it.
+        let Some(terminal) = self
+            .tabs
+            .get(tab_idx)
+            .and_then(|t| t.pane_by_id(pane_id))
+            .map(|p| p.terminal.clone())
+        else {
+            return Task::none();
         };
-        let (mut state, rx) = match spawned {
+        let palette = self.terminal_palette.clone();
+        let spawned = match terminal.lock() {
+            Ok(mut state) => {
+                let program = (!spec.program.is_empty()).then_some(spec.program.as_str());
+                let spawned =
+                    state.respawn_command_env(program, &spec.args, cwd.as_deref(), &[]);
+                if spawned.is_ok() {
+                    state.set_palette(palette);
+                }
+                spawned.map(|rx| (rx, state.pty.as_mut().and_then(|p| p.take_child_exit())))
+            }
+            Err(_) => return Task::none(),
+        };
+        let (rx, exited) = match spawned {
             Ok(spawned) => spawned,
             Err(e) => {
                 tracing::error!("Failed to respawn local shell \"{}\": {e}", spec.label);
@@ -415,18 +456,16 @@ impl Oryxis {
                 )));
             }
         };
-        state.set_palette(self.terminal_palette.clone());
-        let exited = state.pty.as_mut().and_then(|p| p.take_child_exit());
         let Some(pane) = self.tabs.get_mut(tab_idx).and_then(|t| t.pane_by_id_mut(pane_id))
         else {
             return Task::none();
         };
-        // A `TerminalState` owns its PTY, so swapping the Arc wholesale
-        // IS the handover; the widget re-reads it every frame.
-        pane.terminal = Arc::new(Mutex::new(state));
         // Nothing is being dialled: a local shell is live the moment its
-        // PTY exists, so the pane must not be left reading "Reconnecting".
+        // PTY exists, so the pane must not be left reading "Reconnecting";
+        // and the verdict it held was about the shell this one replaces.
         pane.connecting = false;
+        pane.ended = false;
+        pane.end_verdict = None;
         self.local_pane_stream(pane_id, exited, rx)
     }
 }

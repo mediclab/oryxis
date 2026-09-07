@@ -144,9 +144,9 @@ impl PtyHandle {
         // is open, so `exit` in a local shell produced no event at all:
         // the pane froze, the reader thread stayed blocked on a shell
         // that was already gone, and the only EOF it ever saw came from
-        // `Drop` killing a child that had died minutes earlier. That is
-        // why the reader's own log line can only say "child LIKELY
-        // exited"; it never actually knew.
+        // `Drop` killing a child that had died minutes earlier. The
+        // reader still cannot tell an exit from a kill on its own; this
+        // thread is what knows, and what tells.
         //
         // The answer is this thread and the oneshot it fires, not
         // anything the byte stream does. Closing the slave here does
@@ -273,10 +273,23 @@ impl PtyHandle {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "PTY read error for {} after {} bytes: {}",
-                                program_log, total_bytes, e,
-                            );
+                            // Linux answers a read on a pty whose slave
+                            // side has closed with EIO: that is the
+                            // waiter dropping the slave after the shell
+                            // left, the ordinary end of a session and
+                            // not a failure. Anything else is one.
+                            const EIO: i32 = 5;
+                            if cfg!(unix) && e.raw_os_error() == Some(EIO) {
+                                tracing::debug!(
+                                    "PTY closed for {} after {} bytes",
+                                    program_log, total_bytes,
+                                );
+                            } else {
+                                tracing::warn!(
+                                    "PTY read error for {} after {} bytes: {}",
+                                    program_log, total_bytes, e,
+                                );
+                            }
                             break;
                         }
                     }

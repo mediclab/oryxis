@@ -114,6 +114,30 @@ impl TerminalState {
         Ok((Self { backend, pty: Some(pty), palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new() }, rx))
     }
 
+    /// Spawn a new shell INTO this state, keeping its grid and scrollback:
+    /// what an in-place restart of a local pane needs, so the output the
+    /// user was reading stays and the new shell continues below it, the
+    /// way a remote reconnect does. The PTY is sized to the grid as it is
+    /// now, wired to the same event proxy (query replies reach the new
+    /// writer), and the emulator's modes are reset because they belonged
+    /// to the shell that exited. `program` `None` is the OS default shell.
+    pub fn respawn_command_env(
+        &mut self,
+        program: Option<&str>,
+        args: &[String],
+        cwd: Option<&str>,
+        env: &[(String, String)],
+    ) -> TerminalResult<mpsc::UnboundedReceiver<Vec<u8>>> {
+        let (pty, rx) = PtyHandle::spawn_command(
+            self.cols(), self.rows(), program, args, cwd, env, &self.backend.event_proxy,
+        )?;
+        // The old handle, if any, is dropped here: its waiter thread
+        // kills and reaps whatever it still owned.
+        self.pty = Some(pty);
+        self.process(crate::SESSION_MODE_RESET);
+        Ok(rx)
+    }
+
     pub fn new_no_pty(
         cols: u16,
         rows: u16,

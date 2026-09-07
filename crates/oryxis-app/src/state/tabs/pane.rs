@@ -55,6 +55,12 @@ impl PaneEndVerdict {
             Self::Exited(Some(exit)) => match (&exit.signal, exit.code) {
                 (Some(signal), _) => t("pane_exited_signal").replacen("{signal}", signal, 1),
                 (None, 0) => t("pane_exited").to_string(),
+                // A code above `i32::MAX` is Windows reporting an
+                // NTSTATUS (`0xC0000005` for an access violation), which
+                // reads as one in hex and as noise in decimal.
+                (None, code) if code > i32::MAX as u32 => {
+                    t("pane_exited_code").replacen("{code}", &format!("0x{code:08X}"), 1)
+                }
                 (None, code) => t("pane_exited_code").replacen("{code}", &code.to_string(), 1),
             },
         }
@@ -622,6 +628,14 @@ pub(crate) struct Pane {
     /// session so the name cannot drift mid-recording. `None` while the
     /// mirror is off, or before the first flush.
     pub session_log_file: Option<std::path::PathBuf>,
+    /// The mirror failed for this recording and was switched off for it
+    /// (`flush_session_logs_inner`). Separate from `session_log_file`
+    /// being empty, which the resolver reads as "not resolved yet" and
+    /// would otherwise resolve again on the next flush: a folder that
+    /// went away would then be retried every tick, the toast re-stamped
+    /// each time, and a folder that came back would start a new file.
+    /// Cleared with the recording it belongs to.
+    pub session_log_file_stopped: bool,
     /// What this pane reconnects to when restored from a saved session group.
     /// Defaults to `Ephemeral`; the creating site overrides it to `Host` or
     /// `Local` when the pane is referenceable.
@@ -902,6 +916,7 @@ impl Pane {
             session_log_resizes: Vec::new(),
             session_log_last_size: None,
             session_log_file: None,
+            session_log_file_stopped: false,
             origin: PaneOrigin::Ephemeral,
             ended: false,
             end_verdict: None,
@@ -961,6 +976,7 @@ impl Pane {
         // mirror starts a new file too rather than appending the next
         // session onto the end of the last one.
         self.session_log_file = None;
+        self.session_log_file_stopped = false;
     }
 }
 
@@ -1076,6 +1092,7 @@ mod verdict_tests {
         assert_eq!(exit(0, None).text(), "exited");
         assert_eq!(exit(1, None).text(), "exited with code 1");
         assert_eq!(exit(137, Some("SIGKILL")).text(), "ended by signal SIGKILL");
+        assert_eq!(exit(0xC000_0005, None).text(), "exited with code 0xC0000005");
         assert_eq!(PaneEndVerdict::Exited(None).text(), "exited");
         assert_eq!(PaneEndVerdict::Disconnected.text(), "disconnected");
     }

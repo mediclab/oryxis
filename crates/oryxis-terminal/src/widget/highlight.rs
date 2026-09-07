@@ -387,13 +387,18 @@ pub(crate) fn detect_highlights(
                 if end > 0 {
                     let carries_on = wraps_at == Some(col_of(end - 1));
                     let cut = if carries_on { end } else { trim_tail(end, 0) };
-                    highlights.push(Highlight {
-                        row,
-                        start_col: 0,
-                        end_col: (cut - 1) as u16,
-                        color: url_color,
-                        kind: HighlightKind::Url,
-                    });
+                    // A carried token can be nothing but a trailing `.`
+                    // or `)`, which the trim takes whole: nothing is left
+                    // to paint, and `cut - 1` would wrap.
+                    if cut > 0 {
+                        highlights.push(Highlight {
+                            row,
+                            start_col: 0,
+                            end_col: (cut - 1) as u16,
+                            color: url_color,
+                            kind: HighlightKind::Url,
+                        });
+                    }
                     if carries_on {
                         carry_from = Some(row);
                     }

@@ -1656,11 +1656,6 @@ fn sidebar_tab_icon<'a>(tab: crate::state::TerminalSidebarTab) -> iced::widget::
     }
 }
 
-/// Wrap an icon control in a small bottom-anchored tooltip, the shared
-/// affordance for the sidebar tab strip and close affordances.
-/// `icon_tooltip` for a tip built at render time (a formatted figure, a
-/// path) rather than a borrowed `t(...)` literal. Same look; the owned
-/// String is what lets the element outlive the caller's frame-local.
 /// Height of the optional per-pane title bar (issue #208). Fixed rather
 /// than derived so the hit-test that has to add it back can:
 /// `bounds_reporter` measures a pane's BODY, and with a header the body
@@ -1692,6 +1687,9 @@ fn pane_header_button<'a>(
     icon_tooltip(btn.into(), tip)
 }
 
+/// `icon_tooltip` for a tip built at render time (a formatted figure, a
+/// path) rather than a borrowed `t(...)` literal. Same look; the owned
+/// String is what lets the element outlive the caller's frame-local.
 pub(crate) fn icon_tooltip_owned<'a>(
     inner: Element<'a, Message>,
     tip: String,
@@ -1714,6 +1712,8 @@ pub(crate) fn icon_tooltip_owned<'a>(
     .into()
 }
 
+/// Wrap an icon control in a small bottom-anchored tooltip, the shared
+/// affordance for the sidebar tab strip and close affordances.
 pub(crate) fn icon_tooltip<'a>(inner: Element<'a, Message>, tip: &'a str) -> Element<'a, Message> {
     iced::widget::tooltip(
         inner,

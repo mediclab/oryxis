@@ -250,7 +250,19 @@ impl Oryxis {
                 .pane_grid
                 .panes
                 .values()
-                .any(|p| p.session.as_ref().is_some_and(|s| s.is_alive())))
+                // A plugin-backed pane (SSM, ECS Exec, kubectl) has no
+                // handle to ask; it is live until its verdict says
+                // otherwise. In a split that verdict is the pane's own
+                // `ended`; a lone pane ends by the TAB's label suffix
+                // instead, so both are read. Without this a split whose
+                // FOCUSED pane is a local shell reads as nothing to lose
+                // while the plugin sibling is mid-session.
+                .any(|p| {
+                    p.session.as_ref().is_some_and(|s| s.is_alive())
+                        || (p.plugin_backed
+                            && !p.ended
+                            && !t.label.ends_with(" (disconnected)"))
+                }))
     }
 
     /// How many of `idxs` would drop a live session.
@@ -587,6 +599,13 @@ impl Oryxis {
                 // resolves (SshConnected / SshDisconnected /
                 // PaneConnectError all clear it).
                 pane.connecting = true;
+                // The verdict the pane held is over: this dial replaces
+                // the session it was about. `wire_connected_pane` clears
+                // it again on success, but the Local arm never reaches
+                // that funnel, and a pane left `ended` under a live shell
+                // keeps its card and swallows the next real exit.
+                pane.ended = false;
+                pane.end_verdict = None;
                 if let Ok(mut state) = pane.terminal.lock() {
                     // Dim marker so the reconnect reads as a continuation
                     // of the same pane, not a wipe. The scrollback above

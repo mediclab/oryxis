@@ -98,6 +98,32 @@ impl Oryxis {
         pane_id: Uuid,
         verdict: crate::state::PaneEndVerdict,
     ) -> Task<Message> {
+        // Said in the grid in the words the header uses, so a local shell
+        // reads "exited with code 1" where a remote pane reads
+        // "disconnected".
+        let notice = format!("\r\n[{}]\r\n", verdict.text());
+        self.end_pane_with(pane_id, verdict, Some(notice))
+    }
+
+    /// [`Self::note_pane_ended`] without the line in the grid, for the
+    /// sites that already said their piece there (a plugin session's
+    /// hint, a failed dial's error). The verdict, the card and
+    /// `pane_end_action` are the same either way; only the wording in
+    /// the grid is the caller's.
+    pub(crate) fn end_pane_quietly(
+        &mut self,
+        pane_id: Uuid,
+        verdict: crate::state::PaneEndVerdict,
+    ) -> Task<Message> {
+        self.end_pane_with(pane_id, verdict, None)
+    }
+
+    fn end_pane_with(
+        &mut self,
+        pane_id: Uuid,
+        verdict: crate::state::PaneEndVerdict,
+        notice: Option<String>,
+    ) -> Task<Message> {
         let Some(tab_idx) = self.pane_tab_index(pane_id) else {
             return Task::none();
         };
@@ -134,12 +160,10 @@ impl Oryxis {
         }
         if let Some(pane) = self.tabs[tab_idx].pane_by_id_mut(pane_id) {
             pane.ended = true;
-            // Said in the grid in the words the header uses, so a local
-            // shell reads "exited with code 1" where a remote pane reads
-            // "disconnected".
-            let notice = format!("\r\n[{}]\r\n", verdict.text());
             pane.end_verdict = Some(verdict);
-            if let Ok(mut state) = pane.terminal.lock() {
+            if let Some(notice) = notice
+                && let Ok(mut state) = pane.terminal.lock()
+            {
                 state.process(notice.as_bytes());
             }
         }

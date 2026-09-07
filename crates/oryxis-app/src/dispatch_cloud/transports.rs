@@ -45,21 +45,21 @@ impl Oryxis {
                 let split = tab.pane_grid.panes.len() > 1;
                 if let Some(pane) =
                     tab.pane_grid.panes.values_mut().find(|p| p.id == pane_id)
+                    && let Ok(mut term) = pane.terminal.lock()
                 {
-                    if let Ok(mut term) = pane.terminal.lock() {
-                        let notice = format!("\r\n\x1b[2m  {}\x1b[0m\r\n", hint);
-                        term.process(notice.as_bytes());
-                    }
-                    // In a split the verdict is the PANE's (issue #208):
-                    // the tab's label suffix belongs to a lone pane, and
-                    // its siblings are still connected. Without this the
-                    // header keeps reading "connected" by elimination.
-                    if split {
-                        pane.ended = true;
-                    }
+                    let notice = format!("\r\n\x1b[2m  {}\x1b[0m\r\n", hint);
+                    term.process(notice.as_bytes());
                 }
+                // In a split the verdict is the PANE's (issue #208): the
+                // tab's label suffix belongs to a lone pane, and its
+                // siblings are still connected. Through the one owner of
+                // a pane's end, so `pane_end_action` applies here too; the
+                // hint above is the line in the grid.
                 if split {
-                    return Ok(Task::none());
+                    return Ok(self.end_pane_quietly(
+                        pane_id,
+                        crate::state::PaneEndVerdict::Disconnected,
+                    ));
                 }
                 if !tab.label.ends_with(" (disconnected)") {
                     tab.label.push_str(" (disconnected)");

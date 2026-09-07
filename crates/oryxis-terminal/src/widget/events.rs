@@ -815,6 +815,10 @@ where
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<CanvasAction<Message>> {
+        // Same refresh the left press takes: the Extend scheme resolves
+        // the click's row from the mirror, and output landing between
+        // the frame and the press moves the grid under it.
+        self.refresh_offset_mirror(widget_state);
             // The right-click scheme (PuTTY's Menu / Paste / Extend) is
             // the single authority for this gesture. Unlike the old
             // path it is NOT gated on `copy_on_select`: an explicit

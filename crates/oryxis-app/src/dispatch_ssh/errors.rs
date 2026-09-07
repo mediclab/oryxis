@@ -61,9 +61,15 @@ impl Oryxis {
                 // chord. A lone pane is the tab's business, below.
                 if let Some(tab_idx) = self.pane_tab_index(pane_id)
                     && self.tabs[tab_idx].pane_grid.panes.len() > 1
-                    && let Some(pane) = self.tabs[tab_idx].pane_by_id_mut(pane_id)
                 {
-                    pane.ended = true;
+                    tracing::error!("pane SSH connect failed: {msg}");
+                    // Through the one owner of a pane's end, so the
+                    // verdict is recorded and `pane_end_action` applies;
+                    // the failure itself was just printed above.
+                    return self.end_pane_quietly(
+                        pane_id,
+                        crate::state::PaneEndVerdict::Disconnected,
+                    );
                 }
                 // A failed *in-place reconnect* (single-pane tab whose label
                 // matches a saved host) must fall back to the "(disconnected)"

@@ -322,6 +322,7 @@ impl Oryxis {
                 for (pi, pane) in tab.pane_grid.panes.values().enumerate() {
                     if let Some(log_id) = pane.session_log_id
                         && pane.session_log_file.is_none()
+                        && !pane.session_log_file_stopped
                     {
                         resolved.push((ti, pi, self.session_log_file_path(&log_id, &pane.origin)));
                     }
@@ -544,6 +545,7 @@ impl Oryxis {
             for pane in self.tabs.iter_mut().flat_map(|t| t.pane_grid.panes.values_mut()) {
                 if pane.session_log_id.is_some_and(|id| mirror_failed.contains(&id)) {
                     pane.session_log_file = None;
+                    pane.session_log_file_stopped = true;
                 }
             }
             self.set_toast_secs(crate::i18n::t("session_log_file_stopped").to_string(), 8);

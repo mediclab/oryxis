@@ -873,13 +873,21 @@ impl Oryxis {
     /// taken out of the tab when that pane leaves it.
     ///
     /// A tab's `files_state` is an SFTP channel multiplexed on the SSH
-    /// session of `sftp_source()`, so it belongs with that pane's
-    /// session rather than with the tab: a pane moving out takes the
-    /// browsing with it, and a pane closing takes it down. Answers
-    /// `None`, leaving the tab untouched, when `pane_id` is not the pane
-    /// the surface resolves against or when the tab has no SFTP session
-    /// at all. Must be asked BEFORE `take_pane`: the source resolves
-    /// differently once the pane is gone.
+    /// session of the pane that was focused when Files was mounted, so
+    /// it belongs with that pane's session rather than with the tab: a
+    /// pane moving out takes the browsing with it, and a pane closing
+    /// takes it down. Which pane that is is read off the MOUNT, the way
+    /// `hybrid_sftp_remount_dead` reads it: a side whose channel rides
+    /// the pane's own session handle, or (a mount whose channel already
+    /// died) one mounted on the pane's host label. Only a pane holding
+    /// an SSH handle can be that pane: the SFTP console beside a shell
+    /// has none (its session drives the console, not the pane) and
+    /// wears the shell's host label, so a label match from it would
+    /// take the shell's browsing down with the console. `sftp_source()`
+    /// is the pane a NEW mount would use, and in a split of two hosts
+    /// that is whichever shell is focused now, not the one the browsing
+    /// was opened from. Answers `None`, leaving the tab untouched, when
+    /// no side of the mount is the pane's.
     ///
     /// The state comes home first (parked out of the live buffer when
     /// this tab owns it), the tab leaves Files mode, and an inherited
@@ -893,10 +901,27 @@ impl Oryxis {
         pane_id: uuid::Uuid,
     ) -> Option<(bool, Box<crate::state::SftpState>)> {
         let tab = self.tabs.get(tab_idx)?;
-        if tab.sftp_source().id != pane_id || !self.tab_has_sftp_session(tab) {
+        let pane = tab.pane_grid.panes.values().find(|p| p.id == pane_id)?;
+        let own = pane.session.as_ref().and_then(|t| t.ssh())?;
+        let label = pane.label.trim_end_matches(" (disconnected)").to_string();
+        let tab_id = tab._id;
+        let st: &crate::state::SftpState = if self.hybrid_sftp_owner == Some(tab_id) {
+            &self.sftp
+        } else {
+            &tab.files_state
+        };
+        let backed = [&st.left, &st.right].into_iter().any(|side| {
+            side.is_remote
+                && match &side.session {
+                    Some(mounted) => std::sync::Arc::ptr_eq(mounted, own),
+                    // The channel died, or is being remounted: the host
+                    // label is what still names the pane it rode.
+                    None => side.host_label.as_deref() == Some(label.as_str()),
+                }
+        });
+        if !backed {
             return None;
         }
-        let tab_id = tab._id;
         if self.hybrid_sftp_owner == Some(tab_id) {
             self.park_hybrid_sftp();
         }
@@ -1091,18 +1116,6 @@ impl Oryxis {
         Task::none()
     }
 
-    /// Remount a hybrid terminal tab's dead SFTP mounts onto a freshly
-    /// connected session (issue #63: a terminal reconnect used to leave
-    /// the tab's Files surface on the old, closed channel, and Retry
-    /// re-listed the same dead client forever). Every Files pane still
-    /// mounted on the reconnected pane's host whose session is gone or
-    /// no longer alive gets a new SFTP channel multiplexed on `ssh` and
-    /// is re-listed at its previous directory (home fallback when the
-    /// path vanished). Panes mounted on a different host, or whose
-    /// session is still alive (borrowed from another live tab), are
-    /// left alone. Works on the hoisted buffer or the parked
-    /// `files_state` alike; completions are stamped with the tab id so
-    /// `route_sftp_async` lands them wherever the state lives by then.
     /// The session behind a tab's Files browsing dropped: say so on the
     /// surface, in the slot the next operation's error would take.
     ///
@@ -1151,6 +1164,18 @@ impl Oryxis {
         }
     }
 
+    /// Remount a hybrid terminal tab's dead SFTP mounts onto a freshly
+    /// connected session (issue #63: a terminal reconnect used to leave
+    /// the tab's Files surface on the old, closed channel, and Retry
+    /// re-listed the same dead client forever). Every Files pane still
+    /// mounted on the reconnected pane's host whose session is gone or
+    /// no longer alive gets a new SFTP channel multiplexed on `ssh` and
+    /// is re-listed at its previous directory (home fallback when the
+    /// path vanished). Panes mounted on a different host, or whose
+    /// session is still alive (borrowed from another live tab), are
+    /// left alone. Works on the hoisted buffer or the parked
+    /// `files_state` alike; completions are stamped with the tab id so
+    /// `route_sftp_async` lands them wherever the state lives by then.
     pub(crate) fn hybrid_sftp_remount_dead(
         &mut self,
         tab_idx: usize,
