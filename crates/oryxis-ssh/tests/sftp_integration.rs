@@ -1,16 +1,19 @@
 //! End-to-end integration tests for the SFTP path against a real
-//! OpenSSH server running in a throwaway container.
+//! OpenSSH server.
 //!
-//! Requires Docker on the host and is gated behind `#[ignore]` so a
-//! plain `cargo test` (CI without Docker, dev quick loop) skips them.
+//! By default each test spins up its own throwaway container, so the
+//! suite needs Docker on the host and is gated behind `#[ignore]`: a
+//! plain `cargo test` (CI without Docker, the dev quick loop) skips it.
 //! Run explicitly with:
 //!
 //! ```sh
-//! cargo test -p oryxis-ssh -- --ignored
+//! cargo test -p oryxis-ssh --test sftp_integration -- --ignored
 //! ```
 //!
-//! Each test spins up its own container so they can run in parallel
-//! without stepping on a shared sshd.
+//! Without Docker, point the suite at any sshd you can reach by key
+//! (`ORYXIS_TEST_SSH=user@host:port ORYXIS_TEST_SSH_KEY=~/.ssh/id_ed25519`),
+//! a user-mode `sshd -f` on a high port included. Every test then shares
+//! one server and one home directory, so add `--test-threads=1`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,15 +32,66 @@ use testcontainers::{
 const TEST_USER: &str = "tester";
 const TEST_PASS: &str = "testpass123";
 
-/// Stand up a fresh SFTP-capable container and return `(connection,
-/// password)` ready to hand to `SshEngine::connect`. Caller holds the
-/// container handle in scope to keep it alive for the duration of the
-/// test.
-async fn start_sshd() -> (
-    Connection,
-    String,
-    testcontainers::ContainerAsync<GenericImage>,
-) {
+/// Where the tests find a server: a throwaway container by default, or
+/// an sshd of the developer's own when `ORYXIS_TEST_SSH` names one.
+///
+/// `ORYXIS_TEST_SSH=user@host:port` plus `ORYXIS_TEST_SSH_KEY=<path to an
+/// OpenSSH private key>` point the suite at any reachable sshd, with no
+/// Docker involved: a user-mode `sshd -f` on a high port is enough.
+/// That server is used by KEY, because an sshd run without root cannot
+/// verify passwords. Every test then shares one home directory, so run
+/// the suite with `--test-threads=1` in that mode.
+enum ServerGuard {
+    /// Dropping it stops the container, which is all it is held for.
+    Container(#[allow(dead_code)] Box<testcontainers::ContainerAsync<GenericImage>>),
+    External,
+}
+
+/// The credentials the fixture hands back: a password for the container's
+/// generated user, a key for an external server.
+struct TestAuth {
+    password: Option<String>,
+    key: Option<String>,
+}
+
+impl TestAuth {
+    fn password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+
+    fn key(&self) -> Option<oryxis_ssh::KeyMaterial<'_>> {
+        self.key.as_deref().map(oryxis_ssh::KeyMaterial::plain)
+    }
+}
+
+/// The external server named by the environment, if any. A half-set
+/// pair is a mistake worth stopping on rather than a fallback to Docker.
+fn external_server() -> Option<(Connection, TestAuth)> {
+    let target = std::env::var("ORYXIS_TEST_SSH").ok()?;
+    let key_path = std::env::var("ORYXIS_TEST_SSH_KEY")
+        .expect("ORYXIS_TEST_SSH_KEY must name the private key for ORYXIS_TEST_SSH");
+    let (user, rest) = target
+        .split_once('@')
+        .expect("ORYXIS_TEST_SSH is user@host:port");
+    let (host, port) = rest
+        .rsplit_once(':')
+        .expect("ORYXIS_TEST_SSH is user@host:port");
+    let key = std::fs::read_to_string(&key_path)
+        .unwrap_or_else(|e| panic!("reading ORYXIS_TEST_SSH_KEY {key_path}: {e}"));
+    let mut conn = Connection::new("test", host.to_string());
+    conn.port = port.parse().expect("ORYXIS_TEST_SSH port is a number");
+    conn.username = Some(user.to_string());
+    conn.auth_method = AuthMethod::Key;
+    Some((conn, TestAuth { password: None, key: Some(key) }))
+}
+
+/// Stand up a fresh SFTP-capable server and return `(connection, auth)`
+/// ready to hand to `SshEngine::connect`. Caller holds the guard in
+/// scope to keep the server alive for the duration of the test.
+async fn start_sshd() -> (Connection, TestAuth, ServerGuard) {
+    if let Some((conn, auth)) = external_server() {
+        return (conn, auth, ServerGuard::External);
+    }
     let container = GenericImage::new("linuxserver/openssh-server", "latest")
         .with_exposed_port(ContainerPort::Tcp(2222))
         // The "sshd is listening on port 2222" line fires *before* the
@@ -66,7 +120,41 @@ async fn start_sshd() -> (
     conn.port = port;
     conn.username = Some(TEST_USER.to_string());
     conn.auth_method = AuthMethod::Password;
-    (conn, TEST_PASS.to_string(), container)
+    let auth = TestAuth { password: Some(TEST_PASS.to_string()), key: None };
+    (conn, auth, ServerGuard::Container(Box::new(container)))
+}
+
+/// The directory the tests work in: the account's home, or the folder
+/// `ORYXIS_TEST_SSH_DIR` names on an external server. The tests create,
+/// rename and delete files where this points, and on a developer's own
+/// sshd the home is their real one, so the external mode keeps them in
+/// a folder set aside for it (create it on the server first).
+async fn test_home(client: &oryxis_ssh::SftpClient) -> String {
+    match std::env::var("ORYXIS_TEST_SSH_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => client
+            .canonicalize(dir.trim())
+            .await
+            .expect("ORYXIS_TEST_SSH_DIR exists on the server"),
+        _ => client.canonicalize(".").await.expect("canonicalize"),
+    }
+}
+
+/// Whose files the tests see: the container's generated user, or the
+/// account `ORYXIS_TEST_SSH` logs in as.
+fn test_user() -> String {
+    std::env::var("ORYXIS_TEST_SSH")
+        .ok()
+        .and_then(|t| t.split_once('@').map(|(user, _)| user.to_string()))
+        .unwrap_or_else(|| TEST_USER.to_string())
+}
+
+/// What the console's `pwd` must print: the working directory above,
+/// which the container image fixes at `/config` for its user.
+fn console_home_marker() -> String {
+    match std::env::var("ORYXIS_TEST_SSH_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => dir.trim().trim_end_matches('/').to_string(),
+        _ => "/config".to_string(),
+    }
 }
 
 fn engine() -> SshEngine {
@@ -81,19 +169,19 @@ fn engine() -> SshEngine {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn sftp_list_root_after_password_auth() {
-    let (conn, password, _container) = start_sshd().await;
+    let (conn, auth, _server) = start_sshd().await;
     let engine = engine();
     let (session, _rx) = engine
-        .connect(&conn, Some(&password), None, 80, 24)
+        .connect(&conn, auth.password(), auth.key(), 80, 24)
         .await
         .expect("connect");
     let session = Arc::new(session);
     let client = session.open_sftp().await.expect("open sftp");
     // The image's home dir for `tester` is /config, so canonicalize
     // gives an absolute path we can list.
-    let initial = client.canonicalize(".").await.expect("canonicalize");
+    let initial = test_home(&client).await;
     let entries = client.list_dir(&initial).await.expect("list_dir");
     // The home dir is non-empty (the image plants `.ssh/` etc), but
     // we only assert the call resolved, content varies by image
@@ -102,17 +190,17 @@ async fn sftp_list_root_after_password_auth() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn sftp_write_read_round_trip() {
-    let (conn, password, _container) = start_sshd().await;
+    let (conn, auth, _server) = start_sshd().await;
     let engine = engine();
     let (session, _rx) = engine
-        .connect(&conn, Some(&password), None, 80, 24)
+        .connect(&conn, auth.password(), auth.key(), 80, 24)
         .await
         .expect("connect");
     let session = Arc::new(session);
     let client = session.open_sftp().await.expect("open sftp");
-    let home = client.canonicalize(".").await.expect("canonicalize");
+    let home = test_home(&client).await;
 
     let path = format!("{}/round-trip.txt", home.trim_end_matches('/'));
     let payload = b"hello from oryxis test\n";
@@ -135,20 +223,20 @@ async fn sftp_write_read_round_trip() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn sftp_recursive_dir_delete_via_exec() {
     // `remove_dir_recursive` shells out to `rm -rf` over an exec
     // channel, this exercises the SshSession→exec path, which the
     // unit tests can't cover.
-    let (conn, password, _container) = start_sshd().await;
+    let (conn, auth, _server) = start_sshd().await;
     let engine = engine();
     let (session, _rx) = engine
-        .connect(&conn, Some(&password), None, 80, 24)
+        .connect(&conn, auth.password(), auth.key(), 80, 24)
         .await
         .expect("connect");
     let session = Arc::new(session);
     let client = session.open_sftp().await.expect("open sftp");
-    let home = client.canonicalize(".").await.expect("canonicalize");
+    let home = test_home(&client).await;
 
     // Build /home/<user>/scratch/{a,b/c.txt}, then nuke it recursively.
     let scratch = format!("{}/scratch", home.trim_end_matches('/'));
@@ -175,22 +263,22 @@ async fn sftp_recursive_dir_delete_via_exec() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn sftp_open_sibling_for_parallel_pool() {
     // Validates the SFTP sibling-channel path used by the parallel
     // transfer worker pool: opening N independent subsystem channels
     // on the same SSH connection should succeed and each should be
     // independently usable.
-    let (conn, password, _container) = start_sshd().await;
+    let (conn, auth, _server) = start_sshd().await;
     let engine = engine();
     let (session, _rx) = engine
-        .connect(&conn, Some(&password), None, 80, 24)
+        .connect(&conn, auth.password(), auth.key(), 80, 24)
         .await
         .expect("connect");
     let session = Arc::new(session);
     let primary = session.open_sftp().await.expect("primary sftp");
     let siblings: Vec<_> = futures_or_join(primary.clone(), 3).await;
-    let home = primary.canonicalize(".").await.expect("canonicalize");
+    let home = test_home(&primary).await;
     // All siblings should successfully list the same directory in
     // parallel without serialising on the primary's mutex.
     for client in &siblings {
@@ -199,21 +287,21 @@ async fn sftp_open_sibling_for_parallel_pool() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn sftp_stream_upload_download_round_trip() {
     // Exercises the streamed `upload_from` / `download_to` path with a
     // payload larger than one SFTP request (255 KiB) so the chunked pump
     // loop runs multiple iterations in each direction. Bytes must survive
     // local -> remote -> local untouched.
-    let (conn, password, _container) = start_sshd().await;
+    let (conn, auth, _server) = start_sshd().await;
     let engine = engine();
     let (session, _rx) = engine
-        .connect(&conn, Some(&password), None, 80, 24)
+        .connect(&conn, auth.password(), auth.key(), 80, 24)
         .await
         .expect("connect");
     let session = Arc::new(session);
     let client = session.open_sftp().await.expect("open sftp");
-    let home = client.canonicalize(".").await.expect("canonicalize");
+    let home = test_home(&client).await;
 
     // 600 KiB of a non-repeating-ish pattern, spans ~3 chunks.
     let payload: Vec<u8> = (0..600 * 1024).map(|i| (i % 251) as u8).collect();
@@ -246,22 +334,22 @@ async fn sftp_stream_upload_download_round_trip() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn sftp_windowed_large_round_trip() {
     // Drives the concurrent windowed path: a payload above STREAM_THRESHOLD
     // (8 MiB) makes both `upload_from` and `download_to` carry a sliding
     // window of interleaved requests on one handle. This is the real-server
     // check for the multiplexing assumption the unit tests can only fake.
     // Bytes must survive local -> remote -> local intact.
-    let (conn, password, _container) = start_sshd().await;
+    let (conn, auth, _server) = start_sshd().await;
     let engine = engine();
     let (session, _rx) = engine
-        .connect(&conn, Some(&password), None, 80, 24)
+        .connect(&conn, auth.password(), auth.key(), 80, 24)
         .await
         .expect("connect");
     let session = Arc::new(session);
     let client = session.open_sftp().await.expect("open sftp");
-    let home = client.canonicalize(".").await.expect("canonicalize");
+    let home = test_home(&client).await;
 
     // 10 MiB, comfortably over the 8 MiB window threshold so both
     // directions carry a sliding window of concurrent requests. Non-trivial
@@ -363,22 +451,37 @@ async fn expect_output(
     panic!("never saw {needle:?} in console output; got:\n{seen}");
 }
 
-/// Open a console on a fresh container.
+/// Type one command at an idle prompt and wait for the prompt that
+/// follows it. What arrives while a command runs is discarded by design
+/// (`race_command`), so two commands written back to back lose the
+/// second; and the prompt coming back is the only line that says a
+/// transfer is COMPLETE, since its own line arrives when it starts.
+async fn run_at_prompt(
+    console: &SftpShellSession,
+    out: &mut UnboundedReceiver<Vec<u8>>,
+    line: &str,
+    patience_secs: u64,
+) -> String {
+    console.write(format!("{line}\r").as_bytes()).expect("write");
+    expect_output(out, "sftp>", Duration::from_secs(patience_secs)).await
+}
+
+/// Open a console on a fresh server.
 async fn start_console() -> (
     SftpShellSession,
     UnboundedReceiver<Vec<u8>>,
     Arc<oryxis_ssh::SshSession>,
-    testcontainers::ContainerAsync<GenericImage>,
+    ServerGuard,
 ) {
-    let (conn, password, container) = start_sshd().await;
+    let (conn, auth, server) = start_sshd().await;
     let engine = engine();
     let (session, _rx) = engine
-        .connect(&conn, Some(&password), None, 80, 24)
+        .connect(&conn, auth.password(), auth.key(), 80, 24)
         .await
         .expect("connect");
     let session = Arc::new(session);
     let client = session.open_sftp().await.expect("open sftp");
-    let home = client.canonicalize(".").await.expect("home");
+    let home = test_home(&client).await;
     let (console, out) = SftpShellSession::spawn(
         Arc::clone(&session),
         client,
@@ -387,27 +490,27 @@ async fn start_console() -> (
         80,
         "test".to_string(),
     );
-    (console, out, session, container)
+    (console, out, session, server)
 }
 
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_greets_and_prompts() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     let seen = expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
     assert!(seen.contains("Connected to test"), "no banner in:\n{seen}");
     assert!(console.is_alive());
 }
 
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_lists_and_navigates() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     console.write(b"pwd\r").expect("write");
     let seen = expect_output(&mut out, "Remote working directory", Duration::from_secs(10)).await;
-    assert!(seen.contains("/config"), "unexpected home in:\n{seen}");
+    assert!(seen.contains(&console_home_marker()), "unexpected home in:\n{seen}");
 
     console.write(b"cd /etc\r").expect("write");
     console.write(b"pwd\r").expect("write");
@@ -436,9 +539,9 @@ async fn console_lists_and_navigates() {
 /// `SftpClient` reports a missing file with the same error variant a
 /// dead link produces.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_survives_a_failing_command() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     console.write(b"cd /no/such/place\r").expect("write");
@@ -448,13 +551,13 @@ async fn console_survives_a_failing_command() {
     // Still usable afterwards.
     console.write(b"pwd\r").expect("write");
     let seen = expect_output(&mut out, "Remote working directory", Duration::from_secs(10)).await;
-    assert!(seen.contains("/config"), "cd to nowhere moved us:\n{seen}");
+    assert!(seen.contains(&console_home_marker()), "cd to nowhere moved us:\n{seen}");
 }
 
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_round_trips_a_file() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-console-{}", uuid::Uuid::new_v4()));
@@ -489,9 +592,9 @@ async fn console_round_trips_a_file() {
 /// `mget` over a glob, which is the operand shape issue #188 asked for
 /// by name.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_expands_a_glob() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-glob-{}", uuid::Uuid::new_v4()));
@@ -518,9 +621,9 @@ async fn console_expands_a_glob() {
 /// because an empty success looks exactly like a directory with nothing
 /// in it and sends the user looking for files that were never fetched.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_reports_a_glob_that_matched_nothing() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
     console.write(b"mget *.nonesuch\r").expect("write");
     let seen = expect_output(&mut out, "no matches found", Duration::from_secs(10)).await;
@@ -540,9 +643,9 @@ async fn console_reports_a_glob_that_matched_nothing() {
 /// that a real interrupt, landing at whatever point it lands, leaves a
 /// console that still answers.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_survives_an_interrupt_during_a_transfer() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-cancel-{}", uuid::Uuid::new_v4()));
@@ -572,9 +675,9 @@ async fn console_survives_an_interrupt_during_a_transfer() {
 /// it and nothing errors, the consumer just never fires. So the order is
 /// asserted against the bytes rather than trusted.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_emits_semantic_prompt_marks() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     let banner = expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
     // The first prompt is already wrapped: A, the prompt, then B.
     let a = banner.find("\x1b]133;A").expect("no prompt-start in banner");
@@ -599,9 +702,9 @@ async fn console_emits_semantic_prompt_marks() {
 /// `bye` ends the session, and the ordering contract means it reads as
 /// dead BEFORE its output stream ends.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_quits_on_bye_and_reads_dead_before_silent() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
     console.write(b"bye\r").expect("write");
 
@@ -629,9 +732,9 @@ async fn console_quits_on_bye_and_reads_dead_before_silent() {
 /// identical line. From the outside that is a key that does nothing, and
 /// it was reported as one.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_tab_lists_candidates_that_share_no_more() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-tab-{}", uuid::Uuid::new_v4()));
@@ -671,9 +774,9 @@ async fn console_tab_lists_candidates_that_share_no_more() {
 /// server, so a local filename found no candidates and painted nothing.
 /// Tab read as unwired for the whole `put` / `mput` / `lcd` family.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_tab_completes_a_local_path_for_put() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-tab-local-{}", uuid::Uuid::new_v4()));
@@ -706,9 +809,9 @@ async fn console_tab_completes_a_local_path_for_put() {
 /// The first word completes against the command vocabulary, which is how
 /// someone who has never used the console finds out what it can do.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_tab_completes_a_verb() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     console.write(b"prog\t").expect("write");
@@ -725,9 +828,9 @@ async fn console_tab_completes_a_verb() {
 /// the tokenizer's glob-escaping is for: unescaped, the transfer reported
 /// "no matches found" about a file that was plainly there.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_transfers_a_file_whose_name_looks_like_a_pattern() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-tab-glob-{}", uuid::Uuid::new_v4()));
@@ -766,9 +869,9 @@ async fn console_transfers_a_file_whose_name_looks_like_a_pattern() {
 /// counts against free while the percentage counts against AVAILABLE, and
 /// the gap between the two is the filesystem's reserve.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_reports_free_space() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     console.write(b"df\r").expect("write");
@@ -789,30 +892,28 @@ async fn console_reports_free_space() {
 /// protocol. Getting it backwards creates a link with no error at all,
 /// pointing at a name that does not exist.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_links_and_copies() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-link-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     std::fs::write(dir.join("real.txt"), b"the payload").expect("write source");
-    console
-        .write(format!("lcd {}\r", dir.display()).as_bytes())
-        .expect("write");
-    console.write(b"put real.txt\r").expect("write");
-    expect_output(&mut out, "real.txt", Duration::from_secs(20)).await;
+    run_at_prompt(&console, &mut out, &format!("lcd {}", dir.display()), 10).await;
+    let seen = run_at_prompt(&console, &mut out, "put real.txt", 20).await;
+    assert!(seen.contains("real.txt"), "no upload line in:\n{seen}");
 
-    console.write(b"ln -s real.txt link.txt\r").expect("write");
-    console.write(b"ls -l\r").expect("write");
-    let seen = expect_output(&mut out, "link.txt", Duration::from_secs(10)).await;
+    run_at_prompt(&console, &mut out, "ln -s real.txt link.txt", 10).await;
+    let seen = run_at_prompt(&console, &mut out, "ls -l", 10).await;
+    assert!(seen.contains("link.txt"), "no link in the listing:\n{seen}");
     assert!(seen.contains('l'), "no symlink in the listing:\n{seen}");
 
     // The proof the direction is right: fetching THROUGH the link gets
     // the payload. A link created the other way round would resolve to a
-    // name that does not exist.
-    console.write(b"get link.txt fetched.txt\r").expect("write");
-    expect_output(&mut out, "link.txt", Duration::from_secs(20)).await;
+    // name that does not exist. The prompt coming back is what says the
+    // file is complete; the transfer's own line arrives when it STARTS.
+    run_at_prompt(&console, &mut out, "get link.txt fetched.txt", 20).await;
     assert_eq!(
         std::fs::read_to_string(dir.join("fetched.txt")).unwrap_or_default(),
         "the payload",
@@ -820,9 +921,8 @@ async fn console_links_and_copies() {
     );
 
     // And a remote-to-remote copy is a real second file.
-    console.write(b"cp real.txt copied.txt\r").expect("write");
-    console.write(b"get copied.txt copy.txt\r").expect("write");
-    expect_output(&mut out, "copied.txt", Duration::from_secs(20)).await;
+    run_at_prompt(&console, &mut out, "cp real.txt copied.txt", 20).await;
+    run_at_prompt(&console, &mut out, "get copied.txt copy.txt", 20).await;
     assert_eq!(
         std::fs::read_to_string(dir.join("copy.txt")).unwrap_or_default(),
         "the payload",
@@ -834,9 +934,9 @@ async fn console_links_and_copies() {
 /// `-r` walks a tree in both directions, and `-p` carries the mode
 /// across.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_round_trips_a_directory_tree() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-tree-{}", uuid::Uuid::new_v4()));
@@ -875,11 +975,11 @@ async fn console_round_trips_a_directory_tree() {
 /// is too: on Windows there are no mode bits to carry.
 #[cfg(unix)]
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_applies_the_local_umask_and_preserves_modes() {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-umask-{}", uuid::Uuid::new_v4()));
@@ -917,22 +1017,23 @@ async fn console_applies_the_local_umask_and_preserves_modes() {
 /// treated EVERY error as the end would turn a permission failure into a
 /// directory that merely looks shorter than it is, with nothing said.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_names_the_owner_and_reports_a_refused_listing() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     console.write(b"ls -l\r").expect("write");
     let seen = expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
+    let user = test_user();
     assert!(
-        seen.contains(TEST_USER),
+        seen.contains(&user),
         "the owner was not resolved to a name in:\n{seen}"
     );
 
     // `-n` asks for the number even when a name is in hand.
     console.write(b"ls -ln\r").expect("write");
     let seen = expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
-    assert!(!seen.contains(TEST_USER), "-n still showed a name in:\n{seen}");
+    assert!(!seen.contains(&user), "-n still showed a name in:\n{seen}");
 
     // A directory the user may not read is an ERROR, not an empty one.
     console.write(b"ls -l /root\r").expect("write");
@@ -954,9 +1055,9 @@ async fn console_names_the_owner_and_reports_a_refused_listing() {
 /// user did not name is read back and sent unchanged; this is the test
 /// that the reading actually happens.
 #[tokio::test]
-#[ignore = "requires Docker, run with --ignored"]
+#[ignore = "needs an sshd (Docker, or ORYXIS_TEST_SSH), run with --ignored"]
 async fn console_changes_one_half_of_the_ownership() {
-    let (console, mut out, _ssh, _container) = start_console().await;
+    let (console, mut out, _ssh, _server) = start_console().await;
     expect_output(&mut out, "sftp>", Duration::from_secs(10)).await;
 
     let dir = std::env::temp_dir().join(format!("oryxis-own-{}", uuid::Uuid::new_v4()));

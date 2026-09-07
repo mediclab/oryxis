@@ -403,7 +403,19 @@ pub struct SftpClient {
     /// reconnecting. Caps how long the UI can stay in a "Loading…"
     /// state when the remote stops responding mid-request.
     op_timeout_secs: Arc<std::sync::atomic::AtomicU64>,
+    /// One raw session for the extension requests the high-level
+    /// session cannot speak (`owner_names`, `posix_rename`), opened on
+    /// first use and shared by every clone of this client, so a listing
+    /// that asks for owner names costs one channel per CLIENT rather than
+    /// one per call. Transfers never ride it: a streaming window must not
+    /// share a channel with a lookup. Forgotten after a failed request,
+    /// so the next one opens a fresh channel instead of failing the same
+    /// way again.
+    utility_raw: Arc<Mutex<Option<UtilityRaw>>>,
 }
+
+/// A raw session plus the extensions its server advertised.
+type UtilityRaw = (Arc<RawSftpSession>, std::collections::HashMap<String, String>);
 
 impl std::fmt::Debug for SftpClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -425,6 +437,7 @@ impl SftpClient {
             // caller. Seconds-grained because that's what the settings
             // panel exposes.
             op_timeout_secs: Arc::new(std::sync::atomic::AtomicU64::new(30)),
+            utility_raw: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1799,12 +1812,13 @@ impl SftpClient {
     /// specified to FAIL when the target exists, and many servers honour
     /// that, so a write-temp-then-replace flow needs this extension to
     /// stay atomic. The high-level `SftpSession` doesn't surface extended
-    /// requests, so this runs on a dedicated raw channel. A server that
-    /// does not advertise the extension answers [`SshError::Unsupported`]
-    /// before anything is sent, which is the one error a caller may fall
-    /// back from; every other error is the rename's own.
+    /// requests, so this runs on the shared utility raw session. A server
+    /// that does not advertise the extension answers
+    /// [`SshError::Unsupported`] before anything is sent, which is the
+    /// one error a caller may fall back from; every other error is the
+    /// rename's own.
     pub async fn posix_rename(&self, from: &str, to: &str) -> Result<(), SshError> {
-        let (raw, extensions) = self.open_raw_session().await?;
+        let (raw, extensions) = self.utility_raw().await?;
         if !extensions.contains_key("posix-rename@openssh.com") {
             return Err(SshError::Unsupported(format!(
                 "sftp posix-rename({from} → {to}): the server offers no posix-rename extension"
@@ -1818,22 +1832,30 @@ impl SftpClient {
         data.extend_from_slice(&(to.len() as u32).to_be_bytes());
         data.extend_from_slice(to.as_bytes());
         let label = format!("posix_rename({from} → {to})");
-        self.with_op_timeout(&label, async {
-            match raw.extended("posix-rename@openssh.com", data).await {
-                Ok(Packet::Status(s)) if s.status_code == StatusCode::Ok => Ok(()),
-                Ok(Packet::Status(s)) => Err(SshError::Channel(format!(
-                    "sftp posix-rename({from} → {to}): {:?}",
-                    s.status_code
-                ))),
-                Ok(_) => Err(SshError::Channel(
-                    "sftp posix-rename: unexpected reply".into(),
-                )),
-                Err(e) => Err(SshError::Channel(format!(
-                    "sftp posix-rename({from} → {to}): {e}"
-                ))),
+        // A refusal (`Status`) is the server's answer over a healthy
+        // channel; only a transport failure or a timeout retires the
+        // shared session.
+        let reply = self
+            .with_op_timeout(&label, async {
+                raw.extended("posix-rename@openssh.com", data)
+                    .await
+                    .map_err(|e| SshError::Channel(format!("sftp posix-rename({from} → {to}): {e}")))
+            })
+            .await;
+        match reply {
+            Ok(Packet::Status(s)) if s.status_code == StatusCode::Ok => Ok(()),
+            Ok(Packet::Status(s)) => Err(SshError::Channel(format!(
+                "sftp posix-rename({from} → {to}): {:?}",
+                s.status_code
+            ))),
+            Ok(_) => Err(SshError::Channel(
+                "sftp posix-rename: unexpected reply".into(),
+            )),
+            Err(e) => {
+                self.forget_utility_raw().await;
+                Err(e)
             }
-        })
-        .await
+        }
     }
 
     /// Copy a remote file to another remote path on the SAME server.
@@ -2069,6 +2091,27 @@ impl SftpClient {
         Ok((Arc::new(raw), extensions))
     }
 
+    /// The shared utility raw session (see the field), opened on the
+    /// first request. The lock is held across the open on purpose: two
+    /// first requests at once would otherwise open two channels and keep
+    /// one.
+    async fn utility_raw(&self) -> Result<UtilityRaw, SshError> {
+        let mut slot = self.utility_raw.lock().await;
+        if let Some((raw, extensions)) = slot.as_ref() {
+            return Ok((Arc::clone(raw), extensions.clone()));
+        }
+        let (raw, extensions) = self.open_raw_session().await?;
+        *slot = Some((Arc::clone(&raw), extensions.clone()));
+        Ok((raw, extensions))
+    }
+
+    /// Drop the utility session after a request on it failed: a channel
+    /// the server closed, or one that stopped answering, would fail
+    /// every later request the same way, and a fresh open is cheap.
+    async fn forget_utility_raw(&self) {
+        *self.utility_raw.lock().await = None;
+    }
+
     /// Owner and group NAMES for one uid/gid pair, through the
     /// `users-groups-by-id@openssh.com` extension (OpenSSH 8.7 and later
     /// advertise it as version "1").
@@ -2086,7 +2129,7 @@ impl SftpClient {
         uid: u32,
         gid: u32,
     ) -> Result<Option<(Option<String>, Option<String>)>, SshError> {
-        let (raw, extensions) = self.open_raw_session().await?;
+        let (raw, extensions) = self.utility_raw().await?;
         if extensions.get(USERS_GROUPS_BY_ID).map(String::as_str) != Some("1") {
             return Ok(None);
         }
@@ -2096,7 +2139,14 @@ impl SftpClient {
                     .await
                     .map_err(|e| SshError::Channel(format!("sftp {USERS_GROUPS_BY_ID}: {e}")))
             })
-            .await?;
+            .await;
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(e) => {
+                self.forget_utility_raw().await;
+                return Err(e);
+            }
+        };
         let data = match reply {
             Packet::ExtendedReply(reply) => reply.data,
             other => {
