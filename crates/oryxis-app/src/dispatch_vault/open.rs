@@ -119,6 +119,13 @@ impl Oryxis {
                             // (a one-time fallback choice shouldn't stick).
                             self.vault_ui.password_fallback = false;
                             self.load_data_from_vault();
+                            // What the recordings spooled under a soft
+                            // lock goes into the vault now, ahead of the
+                            // live panes' buffers. Explicit, because the
+                            // flush tick only remounts while some pane
+                            // is still recording, and a session closed
+                            // under the lock left a spool with no pane.
+                            self.flush_session_logs();
                             // Re-arm the ssh-agent's dedicated handle if a
                             // runtime survived a soft lock.
                             self.agent_on_unlock();

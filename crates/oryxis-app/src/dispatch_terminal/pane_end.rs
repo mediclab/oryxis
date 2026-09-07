@@ -220,10 +220,8 @@ impl Oryxis {
             }
             pane.session_log_id.take()
         });
-        if let Some(log_id) = ended_log
-            && let Some(vault) = &self.vault
-        {
-            let _ = vault.end_session_log(&log_id);
+        if let Some(log_id) = ended_log {
+            self.end_session_log_now(log_id);
         }
         // The re-key orphans the old id's tmux listing: the view reads
         // the NEW id, so without this the old entry leaks in the map and

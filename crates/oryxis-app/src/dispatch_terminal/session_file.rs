@@ -17,14 +17,110 @@
 //! Per flush, because each chunk is rendered on its own: a redraw that
 //! reaches back into the previous chunk cannot, so a bar that repaints
 //! in place for ten seconds lands as a handful of lines, not one.
+//!
+//! The file is written by ONE thread of its own (`MirrorWriter`), never
+//! on the UI thread: a flush runs inside `update()`, and a disk that
+//! stalls (a network folder, a sleeping drive) would stall every frame
+//! with it. One thread rather than a blocking task per flush because
+//! two tasks for one file can land out of order and one thread cannot.
+//! The rendering goes with it, so the UI thread hands over bytes and a
+//! palette and nothing else. A failure comes back on a second channel
+//! and is read at the next flush, so the mirror is switched off for the
+//! recording it failed on within a tick, the same as before.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 use uuid::Uuid;
 
 use crate::app::Oryxis;
 use crate::state::PaneOrigin;
+
+/// One flushed chunk on its way to a mirror file.
+pub(crate) struct MirrorJob {
+    pub log_id: Uuid,
+    pub path: PathBuf,
+    /// The scrubbed bytes the vault accepted, rendered on the thread.
+    pub bytes: Vec<u8>,
+    pub palette: oryxis_terminal::TerminalPalette,
+}
+
+enum MirrorRequest {
+    Write(Box<MirrorJob>),
+    /// Answer once every job queued before it has been written.
+    Drain(mpsc::Sender<()>),
+}
+
+/// The mirror's writer thread, started on the first job and kept for
+/// the life of the process.
+pub(crate) struct MirrorWriter {
+    jobs: mpsc::Sender<MirrorRequest>,
+    failures: mpsc::Receiver<Uuid>,
+}
+
+impl MirrorWriter {
+    fn start() -> Self {
+        let (jobs, job_rx) = mpsc::channel::<MirrorRequest>();
+        let (failure_tx, failures) = mpsc::channel::<Uuid>();
+        // A thread that cannot start is the one failure this cannot
+        // report through its own channel; the jobs then sit in a
+        // channel nobody reads and every mirror is reported failed at
+        // the next flush by `take_failures` seeing the sender gone.
+        let spawned = std::thread::Builder::new()
+            .name("session-log-mirror".into())
+            .spawn(move || {
+                while let Ok(request) = job_rx.recv() {
+                    match request {
+                        MirrorRequest::Write(job) => {
+                            if let Err(e) = append_mirror_file(&job.path, &job.bytes, &job.palette) {
+                                tracing::warn!(
+                                    "session log file append failed for {}: {e}",
+                                    job.path.display()
+                                );
+                                let _ = failure_tx.send(job.log_id);
+                            }
+                        }
+                        MirrorRequest::Drain(ack) => {
+                            let _ = ack.send(());
+                        }
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!("session log mirror thread did not start: {e}");
+        }
+        Self { jobs, failures }
+    }
+
+    /// Queue one chunk. Never blocks the caller.
+    pub(crate) fn enqueue(&self, job: MirrorJob) {
+        if self.jobs.send(MirrorRequest::Write(Box::new(job))).is_err() {
+            tracing::warn!("session log mirror thread is gone; a chunk was not mirrored");
+        }
+    }
+
+    /// The recordings whose file could not be written since the last
+    /// call, for the caller to switch the mirror off on.
+    pub(crate) fn take_failures(&self) -> Vec<Uuid> {
+        let mut failed: Vec<Uuid> = self.failures.try_iter().collect();
+        failed.dedup();
+        failed
+    }
+
+    /// Wait until everything queued so far is on disk, or `timeout`
+    /// passes: the exit doors call this before `process::exit`, which
+    /// runs no destructor and would drop the tail of every mirror.
+    pub(crate) fn drain(&self, timeout: std::time::Duration) {
+        let (ack_tx, ack_rx) = mpsc::channel::<()>();
+        if self.jobs.send(MirrorRequest::Drain(ack_tx)).is_err() {
+            return;
+        }
+        if ack_rx.recv_timeout(timeout).is_err() {
+            tracing::warn!("session log mirror did not drain within {timeout:?}");
+        }
+    }
+}
 
 impl Oryxis {
     /// The folder the plain-text session logs live in: the configured
@@ -71,62 +167,74 @@ impl Oryxis {
         ))
     }
 
-    /// Append one flushed chunk to the mirror, creating the folder and
-    /// the file on the first call.
-    ///
-    /// Owner-only on unix, like the command log and the vault file
-    /// itself: the content is plaintext by design, which is no reason to
-    /// let the other accounts on the machine read a session. The file is
-    /// 0600; a folder is 0700 only when THIS call creates it. A folder
-    /// the user picked keeps the mode they gave it: it may be shared on
-    /// purpose, and a chmod on every flush would take that away from
-    /// every other account in silence. Windows has no mode to set, so
-    /// the file takes the folder's ACL, which is the user's to choose.
-    pub(crate) fn append_session_log_file(
-        &self,
-        path: &Path,
-        data: &[u8],
-    ) -> std::io::Result<()> {
-        let palette = self.resolve_global_terminal_palette();
-        let text: String = crate::ansi_render::render(data, &palette)
-            .iter()
-            .map(|s| s.text.as_str())
-            .collect();
-        if text.is_empty() {
-            return Ok(());
+    /// The mirror's writer thread, started on first use.
+    pub(crate) fn mirror_writer(&mut self) -> &MirrorWriter {
+        self.mirror_writer.get_or_insert_with(MirrorWriter::start)
+    }
+
+    /// Wait for the queued mirror writes before an exit door closes the
+    /// process; a no-op when nothing was ever mirrored.
+    pub(crate) fn mirror_writer_drain(&self, timeout: std::time::Duration) {
+        if let Some(writer) = &self.mirror_writer {
+            writer.drain(timeout);
         }
-        if let Some(dir) = path.parent() {
-            let mut builder = std::fs::DirBuilder::new();
-            builder.recursive(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            builder.create(dir)?;
-        }
-        let fresh = !path.exists();
-        let mut opts = std::fs::OpenOptions::new();
-        opts.create(true).append(true);
+    }
+}
+
+/// Append one flushed chunk to the mirror, creating the folder and the
+/// file on the first call. Runs on the writer thread.
+///
+/// Owner-only on unix, like the command log and the vault file itself:
+/// the content is plaintext by design, which is no reason to let the
+/// other accounts on the machine read a session. The file is 0600; a
+/// folder is 0700 only when THIS call creates it. A folder the user
+/// picked keeps the mode they gave it: it may be shared on purpose, and
+/// a chmod on every flush would take that away from every other account
+/// in silence. Windows has no mode to set, so the file takes the
+/// folder's ACL, which is the user's to choose.
+fn append_mirror_file(
+    path: &Path,
+    data: &[u8],
+    palette: &oryxis_terminal::TerminalPalette,
+) -> std::io::Result<()> {
+    let text: String = crate::ansi_render::render(data, palette)
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect();
+    if text.is_empty() {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
         }
-        let mut file = opts.open(path)?;
-        if fresh {
-            // A header, once: a file found months later has to say what
-            // it is a recording OF, and the plain warning belongs on the
-            // artifact rather than only in the setting that made it. The
-            // time is the mirror's own start (the first flush, which can
-            // be mid-session when the toggle was turned on late), not
-            // the session's; the vault row holds that one.
-            writeln!(
-                file,
-                "# Oryxis session log (plain-text mirror), mirror started {}\n# Not encrypted.\n",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            )?;
-        }
-        file.write_all(text.as_bytes())
+        builder.create(dir)?;
     }
+    let fresh = !path.exists();
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    if fresh {
+        // A header, once: a file found months later has to say what it
+        // is a recording OF, and the plain warning belongs on the
+        // artifact rather than only in the setting that made it. The
+        // time is the mirror's own start (the first flush, which can be
+        // mid-session when the toggle was turned on late), not the
+        // session's; the vault row holds that one.
+        writeln!(
+            file,
+            "# Oryxis session log (plain-text mirror), mirror started {}\n# Not encrypted.\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        )?;
+    }
+    file.write_all(text.as_bytes())
 }

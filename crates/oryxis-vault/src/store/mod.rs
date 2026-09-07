@@ -162,7 +162,7 @@ const NONCE_LEN: usize = 12;
 ///
 /// A failure propagates instead of panicking, which the old `fill_bytes`
 /// could not do.
-fn os_random(buf: &mut [u8]) -> Result<(), VaultError> {
+pub(crate) fn os_random(buf: &mut [u8]) -> Result<(), VaultError> {
     getrandom::fill(buf).map_err(|e| VaultError::Crypto(format!("OS RNG: {e}")))
 }
 

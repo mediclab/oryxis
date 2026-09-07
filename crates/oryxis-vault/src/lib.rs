@@ -1,6 +1,9 @@
+pub mod ephemeral;
 pub mod keygen;
 pub mod portable;
 pub mod store;
+
+pub use ephemeral::EphemeralKey;
 
 pub use keygen::{
     encrypt_private_pem, generate_ed25519, generate_key, import_key, import_public_key,

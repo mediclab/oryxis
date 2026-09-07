@@ -123,6 +123,7 @@ mod paste_guard;
 mod settings_index;
 mod remote_desktop;
 mod session_redact;
+mod session_spool;
 mod sftp_helpers;
 mod sftp_methods;
 mod drag_out;

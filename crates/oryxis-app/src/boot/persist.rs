@@ -22,6 +22,10 @@ impl Oryxis {
         // the recording is going away with the pane, so there is no
         // later flush to carry the remainder.
         self.flush_session_logs_final();
+        // The mirror writes just queued, and any still in flight: the
+        // thread they run on dies with the process, and `process::exit`
+        // gives it no chance to finish on its own.
+        self.mirror_writer_drain(std::time::Duration::from_secs(3));
         // A host-editor auto-save still inside its debounce window must
         // not die with the process. Interrupted: the window going away
         // concluded nothing about a half-typed Parent Group name, so it

@@ -521,7 +521,9 @@ impl Oryxis {
         // every 2 s so an idle-but-trickling session still persists
         // promptly without a write per SSH chunk. Also unmounted while
         // the vault is locked (the log key is zeroized, a drain would
-        // discard data): buffers accumulate and flush after unlock.
+        // discard data): the capture path's own over-threshold flush
+        // then spools to disk (`session_spool`), and the first flush
+        // after unlock drains the spool ahead of the buffers.
         if self.vault_ui.state == crate::state::VaultState::Unlocked
             && self
                 .tabs

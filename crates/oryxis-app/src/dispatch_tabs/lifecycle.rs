@@ -622,10 +622,8 @@ impl Oryxis {
                 // `SshDisconnected` path that normally does it.
                 pane.session_log_id.take()
             });
-            if let Some(log_id) = ended_log
-                && let Some(vault) = &self.vault
-            {
-                let _ = vault.end_session_log(&log_id);
+            if let Some(log_id) = ended_log {
+                self.end_session_log_now(log_id);
             }
             // The re-key above orphans the old id's tmux listing: the
             // view reads the NEW id (no entry, so the tab sat on the

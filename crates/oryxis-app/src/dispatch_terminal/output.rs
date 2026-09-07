@@ -69,13 +69,18 @@ fn session_log_segments(head: &[u8], marks: &[(usize, i64)]) -> Vec<(usize, i64)
 
 /// One vault row waiting in a flush batch, kept in stream order so the
 /// table's insertion order (which replay reads back) matches the order
-/// the live grid saw things happen.
-enum PendingSessionRow {
+/// the live grid saw things happen. Also the unit the soft-lock spool
+/// stores (`session_spool`).
+pub(crate) enum PendingSessionRow {
     /// Output chunk (`kind='o'`): replay offset (`None` in simple
     /// mode) + bytes.
     Chunk(Option<i64>, Vec<u8>),
     /// Grid geometry change (`kind='r'`) at this point of the stream.
     Resize(i64, u16, u16),
+    /// The recording ended here. Only ever spooled: a recording that
+    /// ends while the vault is locked cannot be stamped until the
+    /// drain, and the row keeps the stamp behind the bytes it follows.
+    End,
 }
 
 /// A replay row produced by [`session_log_rows`], before the bytes are
@@ -289,17 +294,52 @@ impl Oryxis {
         self.set_toast_secs(crate::i18n::t(reason).to_string(), 8);
     }
 
+    /// The spool for rows that arrive under a soft lock, opened on the
+    /// first such flush. `None` when it could not be opened, in which
+    /// case the rows stay on their panes the way they always did.
+    fn session_spool(&mut self) -> Option<&crate::session_spool::SessionSpool> {
+        if self.session_spool.is_none() && !self.session_spool_unavailable {
+            self.session_spool = crate::session_spool::SessionSpool::open();
+            self.session_spool_unavailable = self.session_spool.is_none();
+        }
+        self.session_spool.as_ref()
+    }
+
+    /// Stamp a recording ended, or spool the stamp when the vault is
+    /// locked: the row then follows the bytes already spooled and the
+    /// drain after unlock stamps it in order. Every site that ends a
+    /// recording goes through here, so none can be the one that leaves
+    /// a log open because it happened to end under a lock.
+    pub(crate) fn end_session_log_now(&mut self, log_id: uuid::Uuid) {
+        if self.vault_ui.state == crate::state::VaultState::Unlocked {
+            if let Some(vault) = &self.vault
+                && let Err(e) = vault.end_session_log(&log_id)
+            {
+                tracing::warn!("ending session log {log_id} failed: {e}");
+            }
+            return;
+        }
+        if let Some(spool) = self.session_spool()
+            && let Err(e) = spool.append(log_id, &[PendingSessionRow::End])
+        {
+            tracing::warn!("spooling the end of session log {log_id} failed: {e}");
+        }
+    }
+
     fn flush_session_logs_inner(&mut self, final_flush: bool) {
-        // Nothing is written while the vault is soft-locked: the master
-        // key is zeroized, so an append would come back `Locked`, and
-        // the failure path below reads a refused append as a full disk
-        // and stops EVERY recording. The buffers stay on their panes and
-        // the flush subscription, which is unmounted for the same reason,
-        // drains them once the vault is open again. Guarded here rather
-        // than at the callers because the ones that reach this under a
-        // lock (a local shell exiting, a pane moving) are not the ones
-        // anybody remembers.
-        if self.vault_ui.state != crate::state::VaultState::Unlocked {
+        // Under a soft lock the master key is zeroized, so an append
+        // would come back `Locked`, and the failure path below reads a
+        // refused append as a full disk and stops EVERY recording. The
+        // rows go to the spool instead (`session_spool`), sealed under a
+        // key of this process, which is what bounds the panes' buffers
+        // while the lock holds: the flush tick is unmounted, and the
+        // capture path's over-threshold call is what reaches here. With
+        // no spool to be had the buffers stay on their panes, the old
+        // behaviour. Decided here rather than at the callers because
+        // the ones that reach this under a lock (a local shell exiting,
+        // a pane moving) are not the ones anybody remembers.
+        let locked = self.vault_ui.state != crate::state::VaultState::Unlocked;
+        if locked && self.session_spool().is_none() {
             return;
         }
         // Full detail = timed segments + resize events (.cast export);
@@ -463,6 +503,38 @@ impl Oryxis {
                 }
             }
         }
+        if locked {
+            if let Some(spool) = self.session_spool() {
+                let mut by_log: Vec<(uuid::Uuid, Vec<PendingSessionRow>)> = Vec::new();
+                for (log_id, row) in pending {
+                    match by_log.iter_mut().find(|(id, _)| *id == log_id) {
+                        Some((_, rows)) => rows.push(row),
+                        None => by_log.push((log_id, vec![row])),
+                    }
+                }
+                for (log_id, rows) in by_log {
+                    if let Err(e) = spool.append(log_id, &rows) {
+                        tracing::warn!("spooling session log {log_id} failed: {e}");
+                    }
+                }
+            }
+            return;
+        }
+        // Whatever was spooled under the lock goes first, every file of
+        // it: a pane closed under the lock left one with no owner, and
+        // its rows (its `End` included) belong ahead of anything the
+        // live panes hold now.
+        if let Some(spool) = self.session_spool.as_ref() {
+            let spooled = spool.drain_all();
+            if !spooled.is_empty() {
+                let mut ahead: Vec<(uuid::Uuid, PendingSessionRow)> = Vec::new();
+                for (log_id, rows) in spooled {
+                    ahead.extend(rows.into_iter().map(|row| (log_id, row)));
+                }
+                ahead.append(&mut pending);
+                pending = ahead;
+            }
+        }
         if pending.is_empty() {
             return;
         }
@@ -474,11 +546,17 @@ impl Oryxis {
         if let Some(reason) = self.session_log_capacity_stop() {
             if let Some(vault) = &self.vault {
                 for (log_id, row) in pending {
-                    if let PendingSessionRow::Chunk(offset_ms, bytes) = row {
-                        let scrubbed = crate::session_redact::redact_secrets(&bytes);
-                        let _ = vault.append_session_data(
-                            &log_id, &scrubbed, offset_ms, compress,
-                        );
+                    match row {
+                        PendingSessionRow::Chunk(offset_ms, bytes) => {
+                            let scrubbed = crate::session_redact::redact_secrets(&bytes);
+                            let _ = vault.append_session_data(
+                                &log_id, &scrubbed, offset_ms, compress,
+                            );
+                        }
+                        PendingSessionRow::End => {
+                            let _ = vault.end_session_log(&log_id);
+                        }
+                        PendingSessionRow::Resize(..) => {}
                     }
                 }
             }
@@ -524,22 +602,38 @@ impl Oryxis {
                             append_failed = true;
                         }
                     }
+                    // Drained from the spool: the recording ended under
+                    // the lock, and this is its stamp, in order.
+                    PendingSessionRow::End => {
+                        if let Err(e) = vault.end_session_log(&log_id) {
+                            tracing::warn!("ending session log {log_id} failed: {e}");
+                        }
+                    }
                 }
             }
         }
-        // A failing mirror never takes the recording down with it: the
-        // vault is the record, and a full disk or a folder the user
-        // unplugged is the mirror's problem alone. It IS the user's
-        // problem too, though: a file that stops growing while the
-        // toggle still reads on is a failure nobody can see. So the
-        // mirror is switched off for the sessions it failed on, and
-        // said once.
+        // The writes go to the mirror's own thread, so a stalled disk
+        // never stalls a frame; what that thread could not write comes
+        // back here at the NEXT flush. A failing mirror never takes the
+        // recording down with it: the vault is the record, and a full
+        // disk or a folder the user unplugged is the mirror's problem
+        // alone. It IS the user's problem too, though: a file that
+        // stops growing while the toggle still reads on is a failure
+        // nobody can see. So the mirror is switched off for the sessions
+        // it failed on, and said once.
         let mut mirror_failed: Vec<uuid::Uuid> = Vec::new();
-        for (log_id, path, bytes) in mirror_writes {
-            if let Err(e) = self.append_session_log_file(&path, &bytes) {
-                tracing::warn!("session log file append failed for {}: {e}", path.display());
-                mirror_failed.push(log_id);
+        if mirror || self.mirror_writer.is_some() {
+            let palette = self.resolve_global_terminal_palette();
+            let writer = self.mirror_writer();
+            for (log_id, path, bytes) in mirror_writes {
+                writer.enqueue(crate::dispatch_terminal::MirrorJob {
+                    log_id,
+                    path,
+                    bytes,
+                    palette: palette.clone(),
+                });
             }
+            mirror_failed = writer.take_failures();
         }
         if !mirror_failed.is_empty() {
             for pane in self.tabs.iter_mut().flat_map(|t| t.pane_grid.panes.values_mut()) {

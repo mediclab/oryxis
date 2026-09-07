@@ -577,6 +577,8 @@ impl Oryxis {
                 revealed_secrets: std::collections::HashSet::new(),
                 last_user_activity: std::time::Instant::now(),
                 last_session_log_capacity_check: std::time::Instant::now(),
+                session_spool: None,
+                session_spool_unavailable: false,
                 last_unlock: None,
                 biometric_available,
                 pending_update: None,
@@ -584,6 +586,7 @@ impl Oryxis {
                 update_progress: 0.0,
                 update_error: None,
                 update_ready: None,
+                mirror_writer: None,
                 update_check_status: None,
                 reconnect_counters: std::collections::HashMap::new(),
                 ai: crate::state::AiState::default(),
@@ -741,6 +744,9 @@ impl Oryxis {
         // update (no-op on Unix), before the plugin tasks below may lay
         // down a fresh launcher copy.
         crate::mcp_install::sweep_stale_launcher();
+        // Recording rows a previous process spooled under its soft lock
+        // are sealed under a key that died with it (`session_spool`).
+        crate::session_spool::SessionSpool::sweep_stale();
         // MCP migrate-install + plugin auto-update both need the vault
         // unlocked (they read `mcp_server_enabled` / the plugin rows
         // `load_data_from_vault` populates). When the vault is

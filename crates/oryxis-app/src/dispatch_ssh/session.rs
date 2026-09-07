@@ -411,10 +411,8 @@ impl Oryxis {
                     // then the surface says the link is down rather than
                     // failing one operation at a time.
                     self.hybrid_sftp_mark_dead(tab_idx, pane_id);
-                    if let Some(log_id) = log_id
-                        && let Some(vault) = &self.vault
-                    {
-                        let _ = vault.end_session_log(&log_id);
+                    if let Some(log_id) = log_id {
+                        self.end_session_log_now(log_id);
                     }
                     if self.should_record_history()
                         && let Some(vault) = &self.vault {

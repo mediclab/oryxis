@@ -29,6 +29,8 @@ mod session_file;
 mod triggers;
 
 pub(crate) use links::LinkConfirmCard;
+pub(crate) use output::PendingSessionRow;
+pub(crate) use session_file::{MirrorJob, MirrorWriter};
 pub(crate) use triggers::TriggerConfirmCard;
 
 use iced::Task;
@@ -407,10 +409,8 @@ impl Oryxis {
                 // repairs a pane MOVED to another tab owes, which is why
                 // they live on the tab rather than here.
                 let _ = tab.take_pane(target);
-                if let Some(log_id) = ended_log
-                    && let Some(vault) = &self.vault
-                {
-                    let _ = vault.end_session_log(&log_id);
+                if let Some(log_id) = ended_log {
+                    self.end_session_log_now(log_id);
                 }
                 // The tmux listing is per PANE, so it goes with the pane
                 // unconditionally: no "is the host still open elsewhere"
@@ -462,10 +462,8 @@ impl Oryxis {
                         .pane_tab_index(pane_id)
                         .and_then(|i| self.tabs[i].pane_by_id_mut(pane_id))
                         .and_then(|p| p.session_log_id.take());
-                    if let Some(log_id) = log_id
-                        && let Some(vault) = &self.vault
-                    {
-                        let _ = vault.end_session_log(&log_id);
+                    if let Some(log_id) = log_id {
+                        self.end_session_log_now(log_id);
                     }
                 }
                 // The emulator's modes belong to the shell that armed

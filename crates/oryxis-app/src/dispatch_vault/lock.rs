@@ -79,13 +79,21 @@ impl Oryxis {
                 // connect time). The manual LockVault stays a full
                 // teardown. While locked, the session-log flush and
                 // auto-reconnect tickers unmount (subscription.rs), so
-                // nothing hits the sealed vault; pane buffers accumulate
-                // and drain after unlock.
+                // nothing hits the sealed vault; what the recordings
+                // produce meanwhile is spooled to disk under a key of
+                // this process (`session_spool`) and drained after
+                // unlock.
                 // A debouncing host-editor auto-save needs the key;
                 // persist it before the vault seals. Interrupted: an
                 // idle lock concluded nothing, so a half-typed Parent
                 // Group name must not become a vault group.
                 self.editor_flush_interrupted();
+                // What the recordings hold now reaches the vault while
+                // the key is still there; only what arrives after the
+                // lock goes to the spool.
+                if self.vault.is_some() && self.vault_ui.has_user_password {
+                    self.flush_session_logs();
+                }
                 if let Some(vault) = &mut self.vault
                     && self.vault_ui.has_user_password
                 {
