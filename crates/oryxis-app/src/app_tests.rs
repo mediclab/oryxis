@@ -20,7 +20,6 @@ fn unsafe_remote_entry_names_are_rejected() {
         "/etc/cron.d/x",
         "..\\evil",
         "C:\\evil",
-        "C:evil",
         "a\0b",
     ] {
         assert!(!is_safe_remote_entry_name(bad), "accepted {bad:?}");
@@ -28,6 +27,10 @@ fn unsafe_remote_entry_names_are_rejected() {
     for good in ["file.txt", ".bashrc", "...", "a b c", "weird:name", "über"] {
         assert!(is_safe_remote_entry_name(good), "rejected {good:?}");
     }
+    // A drive-relative shape re-roots a join on Windows and nowhere
+    // else, so it is refused there and is a name on unix.
+    assert!(!oryxis_ssh::sftp::is_safe_entry_name_on("C:evil", true));
+    assert!(oryxis_ssh::sftp::is_safe_entry_name_on("C:evil", false));
 }
 
 #[test]

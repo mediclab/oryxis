@@ -8,7 +8,7 @@
 //!
 //! It follows `sftp(1)`, which follows the shell: `*` does NOT cross a
 //! `/`, so `old/*.gz` expands inside `old` and never further down. That
-//! is why matching is per COMPONENT ([`matches_path`]) rather than one
+//! is why matching is per COMPONENT ([`split_components`]) rather than one
 //! pattern run over the whole string.
 
 /// Whether `name` matches `pattern`, for ONE path component.
@@ -21,11 +21,15 @@
 /// safety property that costs one comparison should not depend on every
 /// call site remembering it.
 ///
-/// A leading dot is not special here. `sftp(1)` lists dotfiles only with
-/// `ls -a`, but that is the LISTING's rule; once the caller has decided
-/// which entries exist, `*` matches what it is given. Keeping the two
-/// rules apart is what lets `get .bashrc` and `ls -a *` both behave.
+/// A leading dot IS special, the way it is in the shell and therefore in
+/// `sftp(1)`, whose glob is the BSD one: a name that starts with `.` is
+/// matched only by a pattern that starts with a literal `.`. That is what
+/// keeps `rm *` in a home directory away from `.ssh`, while `get .bashrc`
+/// (no wildcard) and `mget .*` (a literal dot) still reach dotfiles.
 pub fn matches(pattern: &str, name: &str) -> bool {
+    if name.starts_with('.') && !(pattern.starts_with('.') || pattern.starts_with("\\.")) {
+        return false;
+    }
     let p: Vec<char> = pattern.chars().collect();
     let n: Vec<char> = name.chars().collect();
     match_from(&p, 0, &n, 0)
@@ -193,6 +197,21 @@ pub fn split_components(path: &str) -> (bool, Vec<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shell's rule, which `sftp(1)` inherits through its glob: `*`
+    /// does not see a dotfile, a literal dot does, and a name with a dot
+    /// elsewhere is an ordinary name.
+    #[test]
+    fn a_star_leaves_dotfiles_alone() {
+        assert!(!matches("*", ".ssh"));
+        assert!(!matches("?ssh", ".ssh"));
+        assert!(!matches("[.]ssh", ".ssh"));
+        assert!(matches(".*", ".ssh"));
+        assert!(matches(".s*", ".ssh"));
+        assert!(matches("\\.*", ".ssh"));
+        assert!(matches("*", "a.b"));
+        assert!(matches("*.gz", "log.gz"));
+    }
 
     #[test]
     fn a_star_matches_any_run() {

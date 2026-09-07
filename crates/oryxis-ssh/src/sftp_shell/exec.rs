@@ -229,10 +229,13 @@ pub async fn run(
             // SFTP rename fails when the target exists, so falling back
             // to it silently would make the command mean two things
             // depending on the server; the fallback is only for servers
-            // that do not offer the extension at all.
+            // that do not offer the extension at all, which is the one
+            // error the client names apart. Any other failure is the
+            // rename's own and is reported as it came.
             match client.posix_rename(&from, &to).await {
                 Ok(()) => Ok(()),
-                Err(_) => client.rename(&from, &to).await,
+                Err(SshError::Unsupported(_)) => client.rename(&from, &to).await,
+                Err(e) => Err(e),
             }
         }
         Command::Chmod {
@@ -268,7 +271,14 @@ impl ShellState {
         // Here it stops being a pattern and becomes a PATH, which is
         // exactly where the escapes come off, and the reason this is the
         // funnel every remote operand goes through.
-        let path = &glob::unescape(path);
+        self.resolve_remote_plain(&glob::unescape(path))
+    }
+
+    /// [`Self::resolve_remote`] for a path whose escapes are ALREADY off:
+    /// completion's word, which the lenient tokenizer unquoted on the way
+    /// in. Unescaping it a second time would eat the backslash a quoted
+    /// name carries.
+    pub(super) fn resolve_remote_plain(&self, path: &str) -> String {
         if path == "~" {
             return self.remote_home.clone();
         }
@@ -285,7 +295,13 @@ impl ShellState {
     /// a session, because the local side has no session to ask.
     pub(super) fn resolve_local(&self, path: &str) -> PathBuf {
         // Same funnel, same reason: see [`Self::resolve_remote`].
-        let path = &glob::unescape(path);
+        self.resolve_local_plain(&glob::unescape(path))
+    }
+
+    /// The local twin of [`Self::resolve_remote_plain`]: on Windows the
+    /// backslashes of `'C:\Users\x'` are the path, and a second unescape
+    /// would leave `C:Usersx`.
+    pub(super) fn resolve_local_plain(&self, path: &str) -> PathBuf {
         if path == "~" {
             return local_home();
         }
@@ -368,7 +384,7 @@ async fn cd(
     // makes every later command fail with a confusing message about a
     // file, when the real problem was the directory.
     let stat = client.stat(&target).await?;
-    if stat.permissions.is_some_and(|m| m & 0o040000 == 0) {
+    if stat.permissions.is_some_and(|m| m & 0o170000 != 0o040000) {
         // Returned rather than printed, so the command's exit mark says
         // it failed: a `cd` that reports a red mark is one a user
         // scrolling back can see went wrong.
@@ -416,7 +432,7 @@ async fn ls(
     // always a filter on a directory.
     if pattern.is_none()
         && let Ok(stat) = client.stat(&dir).await
-        && stat.permissions.is_some_and(|m| m & 0o040000 == 0)
+        && stat.permissions.is_some_and(|m| m & 0o170000 != 0o040000)
     {
         let name = dir.rsplit('/').next().unwrap_or(&dir).to_string();
         // A long listing of ONE file names the owner through the
@@ -718,29 +734,31 @@ async fn get(
     let mut failed = 0usize;
     for source in sources {
         let base = source.rsplit('/').next().unwrap_or(&source).to_string();
-        // `base` is about to become part of a LOCAL path, and for a glob
-        // it is a name the server chose. The `/` split above is not a
-        // guard: `..\..\evil.exe` and `C:evil` carry no slash and both
-        // steer the join on Windows. Skip the entry rather than fail the
-        // whole transfer, and say which name was refused, because a file
-        // silently missing from a `mget` is worse than a loud one.
-        if !crate::sftp::is_safe_entry_name(&base) {
+        let (dest, base_lands) = match (&local, multiple) {
+            (Some(l), false) => {
+                let p = state.resolve_local(l);
+                // `get f dir/` and `get f dir` both mean "into dir" when
+                // dir exists, which is what a user expects from `cp`.
+                if p.is_dir() { (p.join(&base), true) } else { (p, false) }
+            }
+            (Some(l), true) => (state.resolve_local(l).join(&base), true),
+            (None, _) => (state.local_cwd.join(&base), true),
+        };
+        // Where `base` becomes part of a LOCAL path (every case but a
+        // single source with a file named as its destination), and for
+        // a glob it is a name the server chose, it is checked first. The
+        // `/` split above is not a guard: `..\..\evil.exe` and `C:evil`
+        // carry no slash and both steer the join on Windows. Skip the
+        // entry rather than fail the whole transfer, and say which name
+        // was refused, because a file silently missing from a `mget` is
+        // worse than a loud one.
+        if base_lands && !crate::sftp::is_safe_entry_name(&base) {
             // `get /` has no last component at all; name the operand then.
             let shown = if base.is_empty() { &source } else { &base };
             line(out, &format!("{shown}: skipped, unsafe file name"));
             failed += 1;
             continue;
         }
-        let dest = match (&local, multiple) {
-            (Some(l), false) => {
-                let p = state.resolve_local(l);
-                // `get f dir/` and `get f dir` both mean "into dir" when
-                // dir exists, which is what a user expects from `cp`.
-                if p.is_dir() { p.join(&base) } else { p }
-            }
-            (Some(l), true) => state.resolve_local(l).join(&base),
-            (None, _) => state.local_cwd.join(&base),
-        };
         let stat = client.stat(&source).await.ok();
         if stat.as_ref().is_some_and(is_dir_stat) {
             if !opts.recursive {
@@ -772,12 +790,16 @@ async fn get(
 /// link-health check runs and a user scrolling back sees the command
 /// did not do all it was asked.
 fn batch_outcome(failed: usize, total: usize) -> Result<(), SshError> {
+    batch_outcome_of(failed, total, "transfers")
+}
+
+/// [`batch_outcome`] for the other batches (`rm`, `chmod`, `chown`):
+/// same rule, the noun says what was counted.
+fn batch_outcome_of(failed: usize, total: usize, what: &str) -> Result<(), SshError> {
     if failed == 0 {
         return Ok(());
     }
-    Err(SshError::Channel(format!(
-        "{failed} of {total} transfers failed"
-    )))
+    Err(SshError::Channel(format!("{failed} of {total} {what} failed")))
 }
 
 /// How deep a recursive transfer follows directories. `sftp(1)`'s own
@@ -789,7 +811,7 @@ const MAX_DIR_DEPTH: usize = 64;
 /// Whether a stat describes a directory. The mode's type bits are the
 /// only thing SFTP v3 offers to say so.
 fn is_dir_stat(stat: &crate::RemoteStat) -> bool {
-    stat.permissions.is_some_and(|m| m & 0o040000 != 0)
+    stat.permissions.is_some_and(|m| m & 0o170000 == 0o040000)
 }
 
 /// Download ONE file, meter and all, then settle its local attributes.
@@ -833,15 +855,18 @@ async fn get_one(
     // what preserving means. Permission bits ONLY: setuid, setgid and
     // the sticky bit never come across, since a server that answers a
     // listing has no business planting them on this machine.
+    // `-f` first: the sync opens the file for writing (Windows needs
+    // that to flush), and a mode without the owner's write bit would
+    // refuse it once applied. `sftp(1)` orders the two the same way.
+    if opts.fsync {
+        sync_local(dest, out).await;
+    }
     let source_mode = stat.as_ref().and_then(|s| s.permissions);
     if let Some(mode) = download_mode(opts.preserve, source_mode, state.lumask) {
         set_local_mode(dest, mode, out);
     }
     if opts.preserve && let Some(mtime) = stat.as_ref().and_then(|s| s.mtime) {
         set_local_mtime(dest, mtime, out);
-    }
-    if opts.fsync {
-        sync_local(dest, out).await;
     }
     Ok(())
 }
@@ -1119,8 +1144,8 @@ async fn put_tree(
 ) -> usize {
     let mut failed = 0usize;
     let mut stack = vec![(root_local.to_path_buf(), root_remote.to_string(), 0usize)];
-    // Directories whose mode waits for the walk to finish.
-    let mut dir_modes: Vec<(String, u32)> = Vec::new();
+    // Directories whose mode and times wait for the walk to finish.
+    let mut dir_attrs: Vec<(String, crate::AttrUpdate)> = Vec::new();
     while let Some((local_dir, remote_dir, depth)) = stack.pop() {
         line(out, &format!("Entering {}", local_dir.display()));
         // An existing directory is not an error here: `put -r` over a
@@ -1133,11 +1158,25 @@ async fn put_tree(
             failed += 1;
             continue;
         }
-        if opts.preserve
-            && let Ok(meta) = tokio::fs::metadata(&local_dir).await
-            && let Some(mode) = unix_mode(&meta)
-        {
-            dir_modes.push((remote_dir.clone(), mode & 0o777));
+        if opts.preserve && let Ok(meta) = tokio::fs::metadata(&local_dir).await {
+            // The same rules as a file: permission bits only, and the
+            // times as a pair or not at all (see `put_one`).
+            let (atime, mtime) = match (
+                file_seconds(meta.accessed().ok()),
+                file_seconds(meta.modified().ok()),
+            ) {
+                (Some(a), Some(m)) => (Some(a), Some(m)),
+                _ => (None, None),
+            };
+            let update = crate::AttrUpdate {
+                permissions: unix_mode(&meta).map(|m| m & 0o777),
+                atime,
+                mtime,
+                ..Default::default()
+            };
+            if !update.is_empty() {
+                dir_attrs.push((remote_dir.clone(), update));
+            }
         }
         let mut read = match tokio::fs::read_dir(&local_dir).await {
             Ok(read) => read,
@@ -1215,13 +1254,9 @@ async fn put_tree(
     }
     // After the walk, for the same reason the download side waits: a
     // read-only mode applied first would stop the writes that fill the
-    // directory.
-    for (remote_dir, mode) in dir_modes.iter().rev() {
-        let update = crate::AttrUpdate {
-            permissions: Some(*mode),
-            ..Default::default()
-        };
-        if let Err(e) = client.set_attrs(remote_dir, update, true).await {
+    // directory, and a parent's mtime lands after every write under it.
+    for (remote_dir, update) in dir_attrs.iter().rev() {
+        if let Err(e) = client.set_attrs(remote_dir, *update, true).await {
             line(out, &e.to_string());
         }
     }
@@ -1287,7 +1322,7 @@ async fn is_remote_dir(client: &SftpClient, path: &str) -> bool {
         .await
         .ok()
         .and_then(|s| s.permissions)
-        .is_some_and(|m| m & 0o040000 != 0)
+        .is_some_and(|m| m & 0o170000 == 0o040000)
 }
 
 async fn rm(
@@ -1296,6 +1331,11 @@ async fn rm(
     state: &ShellState,
     out: &mut impl ConsoleSink,
 ) -> Result<(), SshError> {
+    // Counted like a transfer batch: the prompt mark and the health
+    // probe that follows a failed command both read the result, so a
+    // removal that failed on a dead link must not end green.
+    let mut total = 0usize;
+    let mut failed = 0usize;
     for operand in paths {
         // Each operand is expanded and removed on its own, and a failure
         // on one does not abandon the rest: `rm a b c` where `b` is
@@ -1303,16 +1343,22 @@ async fn rm(
         match expand_remote(&operand, client, state).await {
             Ok(targets) => {
                 for target in targets {
+                    total += 1;
                     line(out, &format!("Removing {target}"));
                     if let Err(e) = client.remove_file(&target).await {
                         line(out, &e.to_string());
+                        failed += 1;
                     }
                 }
             }
-            Err(e) => line(out, &e.to_string()),
+            Err(e) => {
+                line(out, &e.to_string());
+                total += 1;
+                failed += 1;
+            }
         }
     }
-    Ok(())
+    batch_outcome_of(failed, total, "removals")
 }
 
 async fn chmod(
@@ -1347,10 +1393,13 @@ async fn chown(
         Owner::User => "Changing owner on",
         Owner::Group => "Changing group on",
     };
+    let mut total = 0usize;
+    let mut failed = 0usize;
     for operand in paths {
         match expand_remote(&operand, client, state).await {
             Ok(targets) => {
                 for target in targets {
+                    total += 1;
                     line(out, &format!("{label} {target}"));
                     let current = if follow {
                         client.stat(&target).await
@@ -1361,6 +1410,7 @@ async fn chown(
                         Ok(st) => st,
                         Err(e) => {
                             line(out, &e.to_string());
+                            failed += 1;
                             continue;
                         }
                     };
@@ -1382,6 +1432,7 @@ async fn chown(
                                 which.verb()
                             ),
                         );
+                        failed += 1;
                         continue;
                     };
                     let update = crate::AttrUpdate {
@@ -1391,13 +1442,18 @@ async fn chown(
                     };
                     if let Err(e) = client.set_attrs(&target, update, follow).await {
                         line(out, &e.to_string());
+                        failed += 1;
                     }
                 }
             }
-            Err(e) => line(out, &e.to_string()),
+            Err(e) => {
+                line(out, &e.to_string());
+                total += 1;
+                failed += 1;
+            }
         }
     }
-    Ok(())
+    batch_outcome_of(failed, total, "changes")
 }
 
 /// The shape `chmod` and `chown` share: expand each operand, act on every
@@ -1411,20 +1467,28 @@ async fn apply_attrs(
     state: &ShellState,
     out: &mut impl ConsoleSink,
 ) -> Result<(), SshError> {
+    let mut total = 0usize;
+    let mut failed = 0usize;
     for operand in paths {
         match expand_remote(&operand, client, state).await {
             Ok(targets) => {
                 for target in targets {
+                    total += 1;
                     line(out, &format!("{label} {target}"));
                     if let Err(e) = client.set_attrs(&target, update, follow).await {
                         line(out, &e.to_string());
+                        failed += 1;
                     }
                 }
             }
-            Err(e) => line(out, &e.to_string()),
+            Err(e) => {
+                line(out, &e.to_string());
+                total += 1;
+                failed += 1;
+            }
         }
     }
-    Ok(())
+    batch_outcome_of(failed, total, "changes")
 }
 
 async fn ln(

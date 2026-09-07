@@ -241,6 +241,8 @@ impl Repl {
                     Some(Pending::Eof) => break 'repl,
                     None => {}
                 }
+                let mut pending_completions: Vec<(String, usize)> = Vec::new();
+                let mut reprompt_after = false;
                 tokio::select! {
                     chunk = input_rx.recv() => {
                         let Some(chunk) = chunk else { break 'repl };
@@ -252,13 +254,8 @@ impl Repl {
                         if eof {
                             emit_bytes(&out, b"\r\n");
                         }
-                        for (line, cursor) in completions {
-                            let bytes = complete(&line, cursor, &client, &state, &mut editor).await;
-                            emit_bytes(&out, &bytes);
-                        }
-                        if reprompt {
-                            emit_prompt(&out, &editor);
-                        }
+                        pending_completions = completions;
+                        reprompt_after = reprompt;
                     }
                     Some((cols, rows)) = resize_rx.recv() => {
                         let _ = rows;
@@ -269,6 +266,51 @@ impl Repl {
                         // otherwise be wrong until they touched a key.
                         emit_bytes(&out, &editor.redraw());
                     }
+                }
+                // A completion lists a directory over the link, and is
+                // painted OUTSIDE the select, through a race like the one
+                // a command runs under: a Tab against a stalled link then
+                // still hears Ctrl+C and a resize instead of holding the
+                // console for the whole op timeout. Unlike a command's,
+                // what was typed while the listing was in flight is KEPT
+                // and fed to the editor after the paint, in the order the
+                // keys were pressed; it may itself ask for another
+                // completion or submit the line, so this loops until the
+                // typing stops asking.
+                let mut completions = pending_completions;
+                while !completions.is_empty() {
+                    let mut typed: Vec<Vec<u8>> = Vec::new();
+                    for (line, cursor) in std::mem::take(&mut completions) {
+                        let mut pending_cols: Option<u16> = None;
+                        let (painted, meanwhile) = race_completion(
+                            complete(&line, cursor, &client, &state, &mut editor),
+                            &mut input_rx,
+                            &mut resize_rx,
+                            &mut pending_cols,
+                        )
+                        .await;
+                        if let Some(cols) = pending_cols {
+                            state.cols = cols;
+                            editor.set_cols(cols);
+                        }
+                        if let Some(bytes) = painted {
+                            emit_bytes(&out, &bytes);
+                        }
+                        typed.extend(meanwhile);
+                    }
+                    for chunk in typed {
+                        let (echo, events) = editor.feed(&chunk);
+                        emit_bytes(&out, &echo);
+                        let (reprompt, eof, more) = queue_line_events(events, &mut queue);
+                        if eof {
+                            emit_bytes(&out, b"\r\n");
+                        }
+                        reprompt_after |= reprompt;
+                        completions.extend(more);
+                    }
+                }
+                if reprompt_after {
+                    emit_prompt(&out, &editor);
                 }
             };
 
@@ -403,7 +445,14 @@ fn emit_prompt(out: &mpsc::UnboundedSender<Vec<u8>>, editor: &LineEditor) {
 ///
 /// Returns `None` when the command was interrupted (or the input channel
 /// closed under it): dropping the future is the cancellation, and it
-/// takes effect at the future's next await point.
+/// takes effect at the future's next await point. The scratch file a
+/// cancelled transfer leaves is KEPT on purpose: it is what a later
+/// `get` (or `reget`) resumes from, after checking its tail still
+/// matches the server's. See `SftpClient::download_to`.
+///
+/// Everything else typed during a command is discarded, not buffered:
+/// keystrokes collected here would arrive as a phantom line, already
+/// typed, the moment the prompt came back.
 ///
 /// Extracted from the loop so the property it exists for can be tested
 /// against a future that never finishes. A version that awaited the
@@ -420,6 +469,58 @@ async fn race_command<F, T>(
 where
     F: std::future::Future<Output = T>,
 {
+    race_input(future, input_rx, resize_rx, pending_cols, |chunk| {
+        chunk.contains(&0x03)
+    })
+    .await
+}
+
+/// Run a completion's listing under the same race, KEEPING what was
+/// typed meanwhile.
+///
+/// A Tab is a key pressed in the middle of a line, and the characters
+/// that follow it belong to that line: dropping them the way a command
+/// drops its own would lose the tail of anything typed faster than the
+/// link answers. They come back in the order the keys were pressed, for
+/// the caller to feed to the editor AFTER the completion is painted.
+/// An interrupt still cancels the listing, and the chunk carrying it is
+/// kept too, so the editor's own `^C` abandons the line the way it does
+/// at an idle prompt.
+async fn race_completion<F, T>(
+    future: F,
+    input_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    resize_rx: &mut mpsc::UnboundedReceiver<(u16, u16)>,
+    pending_cols: &mut Option<u16>,
+) -> (Option<T>, Vec<Vec<u8>>)
+where
+    F: std::future::Future<Output = T>,
+{
+    let mut typed = Vec::new();
+    let painted = race_input(future, input_rx, resize_rx, pending_cols, |chunk| {
+        let interrupt = chunk.contains(&0x03);
+        typed.push(chunk);
+        interrupt
+    })
+    .await;
+    (painted, typed)
+}
+
+/// The race itself: `future` against the input and resize channels.
+/// `on_chunk` sees every input chunk and answers whether it interrupts,
+/// in which case the future is dropped and `None` comes back. `None`
+/// also when the input channel closed under the future. A resize is
+/// remembered in `pending_cols`, never applied here: the future may be
+/// holding the state it would go to.
+async fn race_input<F, T>(
+    future: F,
+    input_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    resize_rx: &mut mpsc::UnboundedReceiver<(u16, u16)>,
+    pending_cols: &mut Option<u16>,
+    mut on_chunk: impl FnMut(Vec<u8>) -> bool,
+) -> Option<T>
+where
+    F: std::future::Future<Output = T>,
+{
     tokio::pin!(future);
     loop {
         tokio::select! {
@@ -430,18 +531,9 @@ where
             done = &mut future => break Some(done),
             chunk = input_rx.recv() => {
                 let Some(chunk) = chunk else { break None };
-                if chunk.contains(&0x03) {
-                    // Dropping the future cancels the transfer at its
-                    // next await. The scratch file it leaves is KEPT on
-                    // purpose: it is what a later `get` (or `reget`)
-                    // resumes from, after checking its tail still matches
-                    // the server's. See `SftpClient::download_to`.
+                if on_chunk(chunk) {
                     break None;
                 }
-                // Everything else typed during a command is discarded,
-                // not buffered: keystrokes collected here would arrive
-                // as a phantom line, already typed, the moment the
-                // prompt came back.
             }
             Some((cols, _rows)) = resize_rx.recv() => {
                 *pending_cols = Some(cols.max(1));
@@ -486,7 +578,7 @@ async fn complete(
             let listing = match dir.as_deref() {
                 None => state.remote_cwd.clone(),
                 Some("") => "/".to_string(),
-                Some(d) => state.resolve_remote(d),
+                Some(d) => state.resolve_remote_plain(d),
             };
             let Ok(entries) = client.list_dir(&listing).await else {
                 return Vec::new();
@@ -503,7 +595,7 @@ async fn complete(
             let listing = match dir.as_deref() {
                 None => state.local_cwd.clone(),
                 Some("") => PathBuf::from(sep.to_string()),
-                Some(d) => state.resolve_local(d),
+                Some(d) => state.resolve_local_plain(d),
             };
             let Ok(entries) = local_candidates(&listing).await else {
                 return Vec::new();
@@ -728,6 +820,54 @@ mod tests {
         )
         .await;
         assert_eq!(outcome, None);
+    }
+
+    /// Typing during a COMPLETION is kept, in order, for the editor to
+    /// take after the paint: a Tab followed by fast typing on a slow
+    /// link must not lose the characters that followed it. The listing
+    /// itself is not cancelled by ordinary typing.
+    #[tokio::test]
+    async fn typing_during_a_completion_is_kept_in_order() {
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+        let (_resize_tx, mut resize_rx) = mpsc::unbounded_channel();
+        let mut cols = None;
+
+        input_tx.send(b"ab".to_vec()).unwrap();
+        input_tx.send(b"c\r".to_vec()).unwrap();
+        let (painted, typed) = race_completion(
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                "painted"
+            },
+            &mut input_rx,
+            &mut resize_rx,
+            &mut cols,
+        )
+        .await;
+        assert_eq!(painted, Some("painted"), "typing cancelled the listing");
+        assert_eq!(typed, vec![b"ab".to_vec(), b"c\r".to_vec()]);
+    }
+
+    /// An interrupt cancels the listing like it cancels a command, and
+    /// the chunk carrying it travels with the rest of the typing so the
+    /// editor sees the `^C` and abandons the line.
+    #[tokio::test]
+    async fn an_interrupt_cancels_a_completion_and_still_reaches_the_editor() {
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+        let (_resize_tx, mut resize_rx) = mpsc::unbounded_channel();
+        let mut cols = None;
+
+        input_tx.send(b"ab".to_vec()).unwrap();
+        input_tx.send(vec![0x03]).unwrap();
+        let (painted, typed): (Option<()>, _) = race_completion(
+            std::future::pending::<()>(),
+            &mut input_rx,
+            &mut resize_rx,
+            &mut cols,
+        )
+        .await;
+        assert_eq!(painted, None, "a never-ending listing was not cancelled");
+        assert_eq!(typed, vec![b"ab".to_vec(), vec![0x03]]);
     }
 
     /// A local Tab lists the LOCAL directory, which is the half that was

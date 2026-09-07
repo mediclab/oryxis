@@ -206,6 +206,11 @@ pub fn render_listing(entries: &[SftpEntry], opts: &LsOpts, now: i64, cols: u16)
         .iter()
         .map(|e| SftpEntry {
             name: display_name(&e.name),
+            // The owner and group are the server's text as much as the
+            // name (a longname line, or the users-groups-by-id reply),
+            // and they reach the same terminal.
+            owner: e.owner.as_deref().map(display_name),
+            group: e.group.as_deref().map(display_name),
             ..e.clone()
         })
         .collect();
@@ -1225,8 +1230,9 @@ mod tests {
             permissions: None,
             uid: None,
             gid: None,
-            owner: None,
-            group: None,
+            // The names in the owner columns are the server's too.
+            owner: Some("wil\u{1b}]52;c;ZXZpbA==\u{7}son".to_string()),
+            group: Some("st\u{1b}[2Jaff".to_string()),
         };
         for opts in [
             LsOpts { long: true, ..Default::default() },

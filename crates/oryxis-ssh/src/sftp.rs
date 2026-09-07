@@ -74,12 +74,15 @@ pub fn is_safe_entry_name_on(name: &str, windows: bool) -> bool {
     if name.contains('/') || name.contains('\\') || name.contains('\0') {
         return false;
     }
-    // Windows absolute/drive-relative forms ("C:foo") survive the
-    // separator check above but still re-root PathBuf::join there.
-    if name.as_bytes().get(1) == Some(&b':') {
-        return false;
-    }
     if windows {
+        // A drive-relative form ("C:foo") survives the separator check
+        // above but still re-roots `PathBuf::join`. One byte before a
+        // colon is indistinguishable from a drive letter at this layer,
+        // so the shape is refused whole; elsewhere `a:b` is an ordinary
+        // name and a join treats it as one.
+        if name.as_bytes().get(1) == Some(&b':') {
+            return false;
+        }
         if name.ends_with('.') || name.ends_with(' ') {
             return false;
         }
@@ -565,12 +568,11 @@ impl SftpClient {
                         permissions: file.attrs.permissions,
                         uid: file.attrs.uid,
                         gid: file.attrs.gid,
-                        // The crate also parses `user` / `group` out of
-                        // the v4+ attribute fields; prefer those when a
-                        // server sends them, since they are the answer
-                        // rather than a reading of one.
-                        owner: file.attrs.user.or(owner),
-                        group: file.attrs.group.or(group),
+                        // The crate's decoder never fills `attrs.user` /
+                        // `attrs.group` (v3 carries no such fields), so
+                        // the longname reading is the only source here.
+                        owner,
+                        group,
                     });
                 }
             }
@@ -1138,7 +1140,9 @@ impl SftpClient {
 
         // A resume has to place its bytes at an offset, which is what the
         // windowed path does, so it takes that path at any size.
-        if size < STREAM_THRESHOLD && resume_from == 0 {
+        // `-f` takes the streaming path at any size: the fsync extension
+        // names a raw handle, and only that path holds one.
+        if size < STREAM_THRESHOLD && resume_from == 0 && !fsync {
             let local_file = tokio::fs::File::open(local)
                 .await
                 .map_err(|e| SshError::Channel(format!("open {}: {e}", local.display())))?;
@@ -1165,7 +1169,7 @@ impl SftpClient {
         // concurrent writes. TRUNCATE clears any prior contents once so a
         // smaller new file can't leave a stale tail; a resume must NOT ask
         // for it, since the bytes it is continuing from are the point.
-        let raw = self.open_raw_streaming().await?;
+        let (raw, extensions) = self.open_raw_session().await?;
         let mut flags = OpenFlags::WRITE | OpenFlags::CREATE;
         if resume_from == 0 {
             flags |= OpenFlags::TRUNCATE;
@@ -1222,16 +1226,22 @@ impl SftpClient {
         .await;
         // `-f`: ask the server to put the bytes on its disk before it
         // answers. It has to happen BEFORE the close, because the
-        // extension names an open handle, and it is folded into the
-        // result because a durability guarantee that failed quietly is
-        // worse than one nobody asked for.
-        let synced = if fsync {
+        // extension names an open handle. A server that does not offer
+        // the extension is told so rather than asked anyway, and the
+        // answer is REPORTED, never acted on: the bytes are on the
+        // server whatever the fsync said, so the upload is claimed and
+        // the durability the user asked for is what the error is about.
+        let synced = if !fsync {
+            Ok(())
+        } else if !extensions.contains_key("fsync@openssh.com") {
+            Err(SshError::Unsupported(format!(
+                "sftp fsync({target}): the server offers no fsync extension"
+            )))
+        } else {
             raw.fsync(handle.clone())
                 .await
                 .map(|_| ())
                 .map_err(|e| SshError::Channel(format!("sftp fsync({target}): {e}")))
-        } else {
-            Ok(())
         };
         // Close flushes the handle server-side; fold its error in so a
         // failed close after a clean copy still surfaces.
@@ -1240,7 +1250,7 @@ impl SftpClient {
             .await
             .map(|_| ())
             .map_err(|e| SshError::Channel(format!("sftp close({target}): {e}")));
-        let result = result.and(synced).and(close);
+        let result = result.and(close);
         if let Err(e) = result {
             self.discard_upload_partial(
                 &target,
@@ -1250,7 +1260,9 @@ impl SftpClient {
             .await;
             return Err(e);
         }
-        self.claim_upload_target(&target, remote, temp_name).await
+        self.claim_upload_target(&target, remote, temp_name)
+            .await
+            .and(synced)
     }
 
     /// What to do with the bytes an interrupted upload left behind.
@@ -1787,11 +1799,17 @@ impl SftpClient {
     /// specified to FAIL when the target exists, and many servers honour
     /// that, so a write-temp-then-replace flow needs this extension to
     /// stay atomic. The high-level `SftpSession` doesn't surface extended
-    /// requests, so this runs on a dedicated raw channel. Returns an error
-    /// (typically `OpUnsupported`) when the server lacks the extension;
-    /// callers that need portability fall back to remove + `rename`.
+    /// requests, so this runs on a dedicated raw channel. A server that
+    /// does not advertise the extension answers [`SshError::Unsupported`]
+    /// before anything is sent, which is the one error a caller may fall
+    /// back from; every other error is the rename's own.
     pub async fn posix_rename(&self, from: &str, to: &str) -> Result<(), SshError> {
-        let raw = self.open_raw_streaming().await?;
+        let (raw, extensions) = self.open_raw_session().await?;
+        if !extensions.contains_key("posix-rename@openssh.com") {
+            return Err(SshError::Unsupported(format!(
+                "sftp posix-rename({from} → {to}): the server offers no posix-rename extension"
+            )));
+        }
         // posix-rename@openssh.com payload: `string oldpath; string
         // newpath`, each an SSH string (u32 big-endian length + bytes).
         let mut data = Vec::with_capacity(8 + from.len() + to.len());
@@ -1832,22 +1850,56 @@ impl SftpClient {
     /// to name them, which is why this opens a single raw channel and
     /// uses it for both ends.
     pub async fn copy_file(&self, from: &str, to: &str) -> Result<(), SshError> {
-        if from == to {
-            return Err(SshError::Channel(format!(
+        let same = || {
+            Err(SshError::Channel(format!(
                 "sftp copy({from}): source and destination are the same file"
-            )));
+            )))
+        };
+        if from == to {
+            return same();
         }
         let raw = self.open_raw_streaming().await?;
+        // Only a regular file copies. The server opens a directory for
+        // reading without complaint and the copy then fails on its first
+        // read, after the destination was created and truncated on the
+        // way in, which is `sftp(1)`'s own check on `copy`.
+        let source = raw
+            .stat(from)
+            .await
+            .map_err(|e| SshError::Channel(format!("sftp copy stat({from}): {e}")))?
+            .attrs;
+        let mode = source.permissions.unwrap_or(0);
+        if mode & 0o170000 != 0o100000 {
+            return Err(SshError::Channel(format!(
+                "sftp copy({from}): not a regular file"
+            )));
+        }
+        // The same file under two names (a symlink, a link, a path spelled
+        // twice) would be truncated before it is read. Asked of the
+        // server, which is the only side that can resolve the names; a
+        // destination that does not exist yet has nothing to resolve and
+        // cannot be the source.
+        if let (Ok(a), Ok(b)) = (raw.realpath(from).await, raw.realpath(to).await)
+            && let (Some(a), Some(b)) = (a.files.first(), b.files.first())
+            && a.filename == b.filename
+        {
+            return same();
+        }
         let src = raw
             .open(from, OpenFlags::READ, FileAttributes::empty())
             .await
             .map_err(|e| SshError::Channel(format!("sftp copy open({from}): {e}")))?
             .handle;
+        // The copy keeps the source's permission bits (a script stays a
+        // script), the same `0777` mask both transfer directions apply.
         let dst = raw
             .open(
                 to,
                 OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-                FileAttributes::empty(),
+                FileAttributes {
+                    permissions: Some(mode & 0o777),
+                    ..FileAttributes::default()
+                },
             )
             .await
             .map_err(|e| SshError::Channel(format!("sftp copy open({to}): {e}")))?
@@ -3574,17 +3626,19 @@ mod entry_name_tests {
             "/etc/passwd",
             "..\\..\\evil.exe",
             "dir\\evil",
-            "C:evil",
             "C:\\evil",
             "nul\0byte",
         ] {
             assert!(!is_safe_entry_name(bad), "accepted {bad:?}");
         }
-        // `a:b` is refused with the drive letters: one byte before a
-        // colon is indistinguishable from `C:foo` at this layer, and a
-        // remote file named that way is not worth the ambiguity.
         for good in ["file.txt", "..leading-dots", "école", "with space", "a.b:c"] {
             assert!(is_safe_entry_name(good), "rejected {good:?}");
+        }
+        // A drive-relative shape re-roots a join on Windows and nowhere
+        // else, so `a:b` is a name on unix and a refusal on Windows.
+        for drive in ["C:evil", "a:b.txt"] {
+            assert!(!is_safe_entry_name_on(drive, true), "Windows accepted {drive:?}");
+            assert!(is_safe_entry_name_on(drive, false), "unix rejected {drive:?}");
         }
     }
 

@@ -27,6 +27,13 @@ pub enum SshError {
     #[error("Proxy error: {0}")]
     Proxy(String),
 
+    /// The server does not offer what was asked for (an SFTP extension
+    /// it did not advertise). Its own variant so a caller can fall back
+    /// from THIS and only this: a permission failure or a dead link on
+    /// the same request must not be retried another way.
+    #[error("{0}")]
+    Unsupported(String),
+
     /// A `ProxyType::Command` proxy was not approved for execution on
     /// this device, so the dial stopped before spawning anything.
     ///
