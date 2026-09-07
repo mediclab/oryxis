@@ -537,6 +537,9 @@ pub enum SettingsMessage {
     PickSessionLogFileDir,
     /// The folder the picker came back with (`None` = cancelled).
     SessionLogFileDirPicked(Option<String>),
+    /// Reset the plain-text session-log folder to the default
+    /// (`~/.oryxis/session-logs/`).
+    ClearSessionLogFileDir,
     /// Toggle the global "record connection events" (history) setting.
     SettingToggleConnectionHistory,
     // ── Login automations (issue #122) ──

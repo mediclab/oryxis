@@ -122,7 +122,7 @@ impl Oryxis {
                 return Ok(Task::perform(
                     tokio::task::spawn_blocking(move || {
                         let file = rfd::FileDialog::new()
-                            .set_title("Save public key")
+                            .set_title(crate::i18n::t("save_public_key_title"))
                             .set_file_name(format!("{}.pub", sanitize_key_filename(&result.label)))
                             .save_file();
                         match file {
@@ -196,7 +196,7 @@ impl Oryxis {
                 return Ok(Task::perform(
                     tokio::task::spawn_blocking(move || {
                         let file = rfd::FileDialog::new()
-                            .set_title("Export private key")
+                            .set_title(crate::i18n::t("keygen_export_private"))
                             .set_file_name(name)
                             .save_file();
                         match file {

@@ -258,8 +258,9 @@ impl Oryxis {
 
     /// Sub-row for the command-log folder, shown only while the
     /// live-append toggle is on: the effective folder (default
-    /// `~/.oryxis/command-history/`) with a Change button, indented
-    /// like the other nested sub-options.
+    /// `~/.oryxis/command-history/`) with a Browse button, and a Reset
+    /// when a custom folder is set, indented like the other nested
+    /// sub-options.
     fn command_history_dir_row(&self) -> Element<'_, Message> {
         if !self.prefs.command_history_file {
             return Space::new().into();
@@ -279,21 +280,32 @@ impl Oryxis {
                 crate::theme::OryxisColors::t().accent,
             ),
         );
-        container(
-            crate::widgets::dir_row(vec![
-                text(dir)
-                    .size(12)
-                    .color(crate::theme::OryxisColors::t().text_muted)
-                    .width(Length::Fill)
-                    .into(),
-                Space::new().width(10).into(),
-                change,
-            ])
-            .align_y(iced::Alignment::Center),
-        )
-        .padding(Padding { top: 8.0, ..indent })
-        .width(Length::Fill)
-        .into()
+        let mut row = crate::widgets::dir_row(vec![
+            text(dir)
+                .size(12)
+                .color(crate::theme::OryxisColors::t().text_muted)
+                .width(Length::Fill)
+                .into(),
+            Space::new().width(10).into(),
+            change,
+        ]);
+        // Reset-to-default only when a custom folder is set.
+        if self.prefs.command_history_file_dir.is_some() {
+            let reset = self.settings_nav_slot(
+                crate::keynav::RowAction::activate(Message::CommandHistory(CommandHistoryMessage::ClearCommandHistoryDir)),
+                8.0,
+                crate::widgets::styled_button_opt(
+                    crate::i18n::t("reset"),
+                    Some(Message::CommandHistory(CommandHistoryMessage::ClearCommandHistoryDir)),
+                    crate::theme::OryxisColors::t().text_muted,
+                ),
+            );
+            row = row.push(Space::new().width(8)).push(reset);
+        }
+        container(row.align_y(iced::Alignment::Center))
+            .padding(Padding { top: 8.0, ..indent })
+            .width(Length::Fill)
+            .into()
     }
 
     /// Row for the ZMODEM download folder: the resolved path (default or

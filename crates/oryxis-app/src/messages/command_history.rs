@@ -31,4 +31,7 @@ pub enum CommandHistoryMessage {
     PickCommandHistoryDir,
     /// Folder chosen (or dialog dismissed with `None`).
     CommandHistoryDirPicked(Option<String>),
+    /// Reset the command-log folder to the default
+    /// (`~/.oryxis/command-history/`).
+    ClearCommandHistoryDir,
 }

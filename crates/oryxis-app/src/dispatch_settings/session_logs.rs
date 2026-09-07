@@ -76,6 +76,13 @@ impl Oryxis {
                     // is worse than one that finishes where it started.
                 }
             }
+            SettingsMessage::ClearSessionLogFileDir => {
+                // An empty value is what boot reads as "default", so the
+                // reset persists the same shape it will be read back as.
+                // Live recordings keep their folder, as above.
+                self.persist_setting("session_log_file_dir", "");
+                self.prefs.session_log_file_dir = None;
+            }
             SettingsMessage::SettingToggleConnectionHistory => {
                 self.prefs.connection_history = !self.prefs.connection_history;
                 self.persist_setting(

@@ -30,7 +30,7 @@ impl Oryxis {
                 return Ok(Task::perform(
                     tokio::task::spawn_blocking(|| {
                         let file = rfd::FileDialog::new()
-                            .set_title("Select SSH Certificate")
+                            .set_title(crate::i18n::t("select_ssh_certificate_title"))
                             .add_filter("SSH certificate", &["pub"])
                             .pick_file();
                         match file {

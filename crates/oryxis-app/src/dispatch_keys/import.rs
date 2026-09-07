@@ -119,7 +119,7 @@ impl Oryxis {
                 return Ok(Task::perform(
                     tokio::task::spawn_blocking(|| {
                         let file = rfd::FileDialog::new()
-                            .set_title("Select SSH Private Key")
+                            .set_title(crate::i18n::t("select_private_key_title"))
                             .pick_file();
                         match file {
                             Some(path) => {

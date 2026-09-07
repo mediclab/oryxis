@@ -101,7 +101,7 @@ impl Oryxis {
                             return Task::perform(
                                 tokio::task::spawn_blocking(move || {
                                     let path = rfd::FileDialog::new()
-                                        .set_title("Export Vault")
+                                        .set_title(crate::i18n::t("export_vault"))
                                         .add_filter("Oryxis Export", &["oryxis"])
                                         .set_file_name("vault.oryxis")
                                         .save_file()?;
@@ -145,7 +145,7 @@ impl Oryxis {
                         // Same off-the-event-loop rule as the vault
                         // export: the native dialog blocks its thread.
                         let path = rfd::FileDialog::new()
-                            .set_title("Export hosts (CSV)")
+                            .set_title(crate::i18n::t("export_hosts_csv"))
                             .add_filter("CSV", &["csv"])
                             .set_file_name("oryxis-hosts.csv")
                             .save_file()?;
@@ -178,7 +178,7 @@ impl Oryxis {
                 return Task::perform(
                     tokio::task::spawn_blocking(|| {
                         let mut dialog = rfd::FileDialog::new()
-                            .set_title("Import SSH config")
+                            .set_title(crate::i18n::t("import_ssh_config_title"))
                             .add_filter("SSH config", &["", "config"]);
                         if let Some(default) = crate::ssh_config::default_config_path()
                             && let Some(parent) = default.parent()
@@ -225,7 +225,7 @@ impl Oryxis {
                 return Task::perform(
                     tokio::task::spawn_blocking(|| {
                         let path = rfd::FileDialog::new()
-                            .set_title("Import hosts")
+                            .set_title(crate::i18n::t("import_hub_title"))
                             .pick_file()?;
                         let stem = path
                             .file_stem()
@@ -260,7 +260,7 @@ impl Oryxis {
                 return Task::perform(
                     tokio::task::spawn_blocking(|| {
                         let dir = rfd::FileDialog::new()
-                            .set_title("Import a sessions folder")
+                            .set_title(crate::i18n::t("import_sessions_folder_title"))
                             .pick_folder()?;
                         Some(crate::importers::detect::scan_folder(&dir))
                     }),
@@ -531,7 +531,7 @@ impl Oryxis {
                 return Task::perform(
                     tokio::task::spawn_blocking(|| {
                         let path = rfd::FileDialog::new()
-                            .set_title("Import Vault")
+                            .set_title(crate::i18n::t("import_vault"))
                             .add_filter("Oryxis Export", &["oryxis"])
                             .pick_file()?;
                         Some(match std::fs::read(&path) {
@@ -843,10 +843,18 @@ impl Oryxis {
                         .share.suggested_name
                         .clone()
                         .unwrap_or_else(|| "shared.oryxis".to_string());
+                    // The save dialog is titled the way the modal that
+                    // opened it is: a group export reads "Export hosts",
+                    // a single host reads "Share".
+                    let title = if self.share.group_mode {
+                        crate::i18n::t("export_hosts")
+                    } else {
+                        crate::i18n::t("share")
+                    };
                     return Task::perform(
                         tokio::task::spawn_blocking(move || {
                             rfd::FileDialog::new()
-                                .set_title("Share")
+                                .set_title(title)
                                 .add_filter("Oryxis Export", &["oryxis"])
                                 .set_file_name(&default_name)
                                 .save_file()

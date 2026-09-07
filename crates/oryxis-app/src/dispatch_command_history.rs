@@ -44,7 +44,7 @@ impl Oryxis {
                 return Task::perform(
                     tokio::task::spawn_blocking(move || {
                         let path = rfd::FileDialog::new()
-                            .set_title("Export command history")
+                            .set_title(crate::i18n::t("command_history_export_title"))
                             .set_file_name(&default_name)
                             .add_filter("Text", &["txt"])
                             .save_file()?;
@@ -83,7 +83,7 @@ impl Oryxis {
                 return Task::perform(
                     tokio::task::spawn_blocking(|| {
                         rfd::FileDialog::new()
-                            .set_title("Command log folder")
+                            .set_title(crate::i18n::t("command_log_folder_title"))
                             .pick_folder()
                             .map(|p| p.display().to_string())
                     }),
@@ -95,6 +95,12 @@ impl Oryxis {
                     self.persist_setting("command_history_file_dir", &dir);
                     self.prefs.command_history_file_dir = Some(dir);
                 }
+            }
+            CommandHistoryMessage::ClearCommandHistoryDir => {
+                // An empty value is what boot reads as "default", so the
+                // reset persists the same shape it will be read back as.
+                self.persist_setting("command_history_file_dir", "");
+                self.prefs.command_history_file_dir = None;
             }
             CommandHistoryMessage::RunHistoryCommand(id) => {
                 self.inject_history_command(id, true);

@@ -384,6 +384,7 @@ impl Oryxis {
             | SettingsMessage::SettingToggleSessionLogFile
             | SettingsMessage::PickSessionLogFileDir
             | SettingsMessage::SessionLogFileDirPicked(..)
+            | SettingsMessage::ClearSessionLogFileDir
             | SettingsMessage::SettingToggleConnectionHistory
             | SettingsMessage::LogsRetentionChanged(..)
             | SettingsMessage::LogsSizeCapChanged(..)

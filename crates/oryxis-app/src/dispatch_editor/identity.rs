@@ -64,7 +64,7 @@ impl Oryxis {
                     .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
                 return Task::perform(
                     tokio::task::spawn_blocking(move || {
-                        let mut dialog = rfd::FileDialog::new().set_title("Select private key");
+                        let mut dialog = rfd::FileDialog::new().set_title(crate::i18n::t("select_private_key_title"));
                         if let Some(dir) = start {
                             dialog = dialog.set_directory(dir);
                         }
