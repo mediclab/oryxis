@@ -518,7 +518,7 @@ impl TerminalTab {
     pub fn adopting(pane: Pane) -> Self {
         let label = pane.label.clone();
         let (pane_grid, focused) = pane_grid::State::new(pane);
-        Self {
+        let mut tab = Self {
             _id: Uuid::new_v4(),
             label,
             custom_name: None,
@@ -542,7 +542,11 @@ impl TerminalTab {
             files_mode: false,
             files_state: Box::default(),
             broadcast: false,
-        }
+        };
+        // The pane is alone now, whatever it was in the tab it left: a
+        // dead one arrives wearing the tab-wide verdict, like a survivor.
+        tab.sync_label_to_sole_pane();
+        tab
     }
 
     /// A dormant tab recreated at boot: it shows in the strip with the
@@ -1011,6 +1015,19 @@ impl TerminalTab {
             return;
         }
         self.label = survivor.label.clone();
+        // A pane that lost its session INSIDE a split holds the verdict
+        // itself (`ended`), because the tab-wide suffix would have
+        // endangered its siblings. Alone, it is exactly the tab the
+        // relabel-and-reconnect answer exists for, and the auto-reconnect
+        // sweep, the chip and the tab jump all read that answer off the
+        // suffix; without it a lone survivor sat dead with nobody
+        // dialling it back. The card stays: the two answers coexist.
+        if survivor.ended
+            && matches!(survivor.end_verdict, Some(PaneEndVerdict::Disconnected))
+            && !self.label.ends_with(" (disconnected)")
+        {
+            self.label.push_str(" (disconnected)");
+        }
     }
 
     /// The automatic label, ignoring any user rename. This is what
@@ -1123,6 +1140,56 @@ mod terminal_tab_tests {
         assert!(!tab.ssm_keepalive(), "the tab kept a keepalive for a pane it lost");
         let own = TerminalTab::adopting(pane);
         assert!(own.ssm_keepalive(), "the plugin pane lost its keepalive on the way out");
+    }
+
+    /// A remote pane that died inside a split holds the verdict itself;
+    /// once its sibling leaves, the tab it is alone in wears the suffix
+    /// the auto-reconnect sweep and the chip read, and so does the tab
+    /// a dead pane is broken out into. A shell that merely exited is a
+    /// local matter and gets no such suffix.
+    #[test]
+    fn a_lone_survivor_takes_the_tab_wide_verdict() {
+        let mut tab = TerminalTab::new_single("host".into(), dummy_terminal());
+        let dead = tab.focused;
+        let live = split(&mut tab, pane_grid::Axis::Horizontal);
+        {
+            let pane = tab.pane_grid.get_mut(dead).unwrap();
+            pane.ended = true;
+            pane.end_verdict = Some(PaneEndVerdict::Disconnected);
+        }
+        assert!(!tab.label.ends_with(" (disconnected)"), "a split tab took the tab-wide suffix");
+
+        let moved = tab.take_pane(live).expect("the live pane left");
+        assert_eq!(tab.label, "host (disconnected)");
+        assert!(!tab.label.ends_with("(disconnected) (disconnected)"));
+
+        // The other door: the dead pane is the one that leaves.
+        let mut own = TerminalTab::adopting(moved);
+        assert_eq!(own.label, "p", "a live pane took a suffix it has no claim to");
+        let exited = own.focused;
+        {
+            let pane = own.pane_grid.get_mut(exited).unwrap();
+            pane.ended = true;
+            pane.end_verdict = Some(PaneEndVerdict::Exited(None));
+        }
+        own.sync_label_to_sole_pane();
+        assert_eq!(own.label, "p", "a local exit is not a disconnect");
+
+        // A lone pane cannot leave its grid, so the break-out of a DEAD
+        // pane is a second split: the dead one leaves, the live one
+        // stays, and only the tab of one wears the suffix.
+        let mut tab = TerminalTab::new_single("host".into(), dummy_terminal());
+        let dead = tab.focused;
+        let _live = split(&mut tab, pane_grid::Axis::Horizontal);
+        {
+            let pane = tab.pane_grid.get_mut(dead).unwrap();
+            pane.ended = true;
+            pane.end_verdict = Some(PaneEndVerdict::Disconnected);
+        }
+        let dead_pane = tab.take_pane(dead).expect("the dead pane left");
+        assert_eq!(tab.label, "p", "the survivor's tab took the leaver's verdict");
+        let broken_out = TerminalTab::adopting(dead_pane);
+        assert_eq!(broken_out.label, "host (disconnected)");
     }
 
     fn split(tab: &mut TerminalTab, axis: pane_grid::Axis) -> pane_grid::Pane {
