@@ -38,24 +38,10 @@ impl Oryxis {
         // the top the moment one opened; `layer_modals` documents the same
         // rule for the in-view modals.
         let modal: Option<(Element<'_, Message>, Option<Message>, f32)> =
-            // The error dialog renders inside `view_main` (below this
-            // overlay), so the update modal yields while one is up: at
-            // boot a failed self-update raises the dialog and the update
-            // check re-offers the same build moments later, and without
-            // the gate the offer would cover the failure report it is
-            // the consequence of. Dismissing the dialog reveals the
-            // pending offer.
-            //
-            // A DOWNLOAD IN FLIGHT never yields: an unrelated async
-            // failure (a cloud refresh, a dynamic group resolve) can
-            // raise a dialog from any domain at any moment, and hiding
-            // the progress surface would not stop the download, which
-            // ends by launching the installer and closing the window.
-            // The app must not vanish out from under a user reading
-            // something else.
-            if self.pending_update.is_some()
-                && (self.update_downloading || self.error_dialog.is_none())
-            {
+            // The gate is `update_modal_shown`, shared with
+            // `is_modal_open` so the keyboard layer sees exactly what is
+            // drawn.
+            if self.update_modal_shown() {
                 Some((self.view_update_modal(), None, 40.0))
             } else if self.local_shell_picker_open {
                 Some((

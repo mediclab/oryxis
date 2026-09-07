@@ -66,7 +66,12 @@ impl Oryxis {
                     action: Some(crate::state::ErrorDialogAction {
                         label: crate::i18n::t("renderer_restart_now").to_string(),
                         message: Box::new(Message::Settings(SettingsMessage::RelaunchApp)),
-                        danger: false,
+                        // A restart closes every live session, so with
+                        // any open it is the destructive answer: styled
+                        // as one and NOT the default row, so a stray
+                        // Enter dismisses instead. With nothing live it
+                        // costs nothing and Enter may take it.
+                        danger: self.live_session_tab_count() > 0,
                     }),
                 });
             }

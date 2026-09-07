@@ -135,6 +135,10 @@ impl Oryxis {
                     // action, so a stray Enter never hands a remote
                     // host's URL to the browser.
                     | Modal::TerminalLinkConfirm
+                    // The update offer: Later is the default-ringed row
+                    // in every state, so a stray Enter on a dialog that
+                    // opened itself neither downloads nor restarts.
+                    | Modal::UpdateOffer
                     // The highlight-rule editor is a form, but it walks
                     // like a confirm: Tab / arrows step its rows, Enter
                     // fires the default (Save). Its text fields keep the

@@ -131,6 +131,16 @@ pub(crate) enum Modal {
     /// first; Esc / backdrop / the Cancel button all decline (the safe
     /// default), and only the Lock button commits.
     LockVaultConfirm,
+    /// The update offer (`pending_update`): skip / later / update now,
+    /// then the download's progress, then the ready state's ask to
+    /// restart. It renders at the ROOT, above every in-view modal, so
+    /// Esc answers it first; it blocks input because Enter must never
+    /// fall through to the PTY it covers; and it appears unbidden (the
+    /// boot check), so Later is the default row in every state: a stray
+    /// Enter neither starts a download nor restarts the app. Esc is
+    /// Later too, except while the download runs, when the progress
+    /// surface is the only sign of a download that ends by asking.
+    UpdateOffer,
 }
 
 impl Modal {
@@ -177,6 +187,7 @@ impl Modal {
         Modal::TriggerConfirm,
         Modal::TerminalLinkConfirm,
         Modal::LockVaultConfirm,
+        Modal::UpdateOffer,
     ];
 
     /// Modals Esc dismisses, in topmost-first priority order (the order
@@ -184,6 +195,10 @@ impl Modal {
     /// dismissal and are not Esc-closeable: the kbi prompt and the SFTP
     /// rename / new-entry / properties / overwrite dialogs.
     pub(crate) const ESC_ORDER: &'static [Modal] = &[
+        // The update offer is the first branch of the root overlay
+        // chain (`root_view`), drawn over everything below, so it is
+        // the one dialog the user can see whenever it is up.
+        Modal::UpdateOffer,
         Modal::NewTabPicker,
         Modal::TabJump,
         Modal::CommandPalette,
@@ -295,7 +310,8 @@ impl Modal {
             | Modal::HighlightRuleEditor
             | Modal::TriggerConfirm
             | Modal::TerminalLinkConfirm
-            | Modal::LockVaultConfirm => true,
+            | Modal::LockVaultConfirm
+            | Modal::UpdateOffer => true,
         }
     }
 }
@@ -349,10 +365,11 @@ mod tests {
                 | Modal::HighlightRuleEditor
                 | Modal::TriggerConfirm
                 | Modal::TerminalLinkConfirm
-                | Modal::LockVaultConfirm => {}
+                | Modal::LockVaultConfirm
+                | Modal::UpdateOffer => {}
             }
         }
-        assert_eq!(Modal::ALL.len(), 40, "add the new variant to Modal::ALL");
+        assert_eq!(Modal::ALL.len(), 41, "add the new variant to Modal::ALL");
         // Every Esc-closeable modal must also be a known modal.
         for m in Modal::ESC_ORDER {
             assert!(Modal::ALL.contains(m));

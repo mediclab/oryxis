@@ -1,6 +1,13 @@
 //! Update-available modal: three choices (skip / later / update now) + a
 //! short release-notes preview. During download we swap the action row
-//! for a progress bar; errors stay inline in the same card.
+//! for a progress bar; errors stay inline in the same card. Once the
+//! download is in hand the row becomes the ask to restart.
+//!
+//! The card is `Modal::UpdateOffer` on the keyboard layer: its rows are
+//! recorded in visual order (the release link, then the buttons), with
+//! Later as the default row in every state, because the card opens
+//! itself (the boot check) and a stray Enter must neither start a
+//! download nor restart the app.
 
 use iced::border::Radius;
 use iced::widget::{column, container, scrollable, text, MouseArea, Space};
@@ -8,6 +15,7 @@ use iced::{Background, Border, Element, Length, Padding};
 
 use crate::app::{UpdateMessage, Message, Oryxis};
 use crate::i18n::t;
+use crate::keynav::RowAction;
 use crate::theme::OryxisColors;
 use crate::widgets::{dir_row, styled_button};
 
@@ -17,6 +25,9 @@ impl Oryxis {
             Some(i) => i,
             None => return Space::new().into(),
         };
+        // The topmost navigable surface of the frame: record from a
+        // clean ring, like every other modal view.
+        self.modal_nav_reset();
 
         // What this binary actually is. A nightly build carries the same
         // CARGO_PKG_VERSION as the stable it branched from, so showing the
@@ -79,12 +90,18 @@ impl Oryxis {
             .into()
         };
 
-        let release_link = MouseArea::new(
-            text(t("open_release_github"))
-                .size(11)
-                .color(OryxisColors::t().accent),
-        )
-        .on_press(Message::Update(UpdateMessage::UpdateOpenRelease));
+        let release_link = self.modal_nav_slot(
+            RowAction::activate(Message::Update(UpdateMessage::UpdateOpenRelease)),
+            4.0,
+            false,
+            MouseArea::new(
+                text(t("open_release_github"))
+                    .size(11)
+                    .color(OryxisColors::t().accent),
+            )
+            .on_press(Message::Update(UpdateMessage::UpdateOpenRelease))
+            .into(),
+        );
 
         // Action row OR progress bar depending on state.
         let action_area: Element<'_, Message> = if self.update_downloading {
@@ -145,16 +162,29 @@ impl Oryxis {
                 Space::new().height(12),
                 dir_row(vec![
                     Space::new().width(Length::Fill).into(),
-                    styled_button(
-                        t("update_later"),
-                        Message::Update(UpdateMessage::UpdateLater),
-                        OryxisColors::t().bg_hover,
+                    // Later is the default row: the restart closes every
+                    // live session, which is the very thing this state
+                    // exists to ask about.
+                    self.modal_nav_slot_default(
+                        RowAction::activate(Message::Update(UpdateMessage::UpdateLater)),
+                        6.0,
+                        false,
+                        styled_button(
+                            t("update_later"),
+                            Message::Update(UpdateMessage::UpdateLater),
+                            OryxisColors::t().bg_hover,
+                        ),
                     ),
                     Space::new().width(8).into(),
-                    styled_button(
-                        t("update_restart_now"),
-                        Message::Update(UpdateMessage::UpdateInstallNow),
-                        OryxisColors::t().accent,
+                    self.modal_nav_slot(
+                        RowAction::activate(Message::Update(UpdateMessage::UpdateInstallNow)),
+                        6.0,
+                        true,
+                        styled_button(
+                            t("update_restart_now"),
+                            Message::Update(UpdateMessage::UpdateInstallNow),
+                            OryxisColors::t().accent,
+                        ),
                     ),
                 ])
                 .align_y(iced::Alignment::Center),
@@ -162,22 +192,40 @@ impl Oryxis {
             .into()
         } else {
             dir_row(vec![
-                styled_button(
-                    t("update_skip_version"),
-                    Message::Update(UpdateMessage::UpdateSkipVersion),
-                    OryxisColors::t().bg_selected,
+                self.modal_nav_slot(
+                    RowAction::activate(Message::Update(UpdateMessage::UpdateSkipVersion)),
+                    6.0,
+                    false,
+                    styled_button(
+                        t("update_skip_version"),
+                        Message::Update(UpdateMessage::UpdateSkipVersion),
+                        OryxisColors::t().bg_selected,
+                    ),
                 ),
                 Space::new().width(Length::Fill).into(),
-                styled_button(
-                    t("update_later"),
-                    Message::Update(UpdateMessage::UpdateLater),
-                    OryxisColors::t().bg_hover,
+                // Later is the default row here too: the offer opened
+                // itself, and Enter on a dialog nobody asked for must
+                // commit to nothing.
+                self.modal_nav_slot_default(
+                    RowAction::activate(Message::Update(UpdateMessage::UpdateLater)),
+                    6.0,
+                    false,
+                    styled_button(
+                        t("update_later"),
+                        Message::Update(UpdateMessage::UpdateLater),
+                        OryxisColors::t().bg_hover,
+                    ),
                 ),
                 Space::new().width(8).into(),
-                styled_button(
-                    t("update_now"),
-                    Message::Update(UpdateMessage::UpdateStartDownload),
-                    OryxisColors::t().accent,
+                self.modal_nav_slot(
+                    RowAction::activate(Message::Update(UpdateMessage::UpdateStartDownload)),
+                    6.0,
+                    true,
+                    styled_button(
+                        t("update_now"),
+                        Message::Update(UpdateMessage::UpdateStartDownload),
+                        OryxisColors::t().accent,
+                    ),
                 ),
             ])
             .align_y(iced::Alignment::Center)

@@ -69,6 +69,9 @@ impl Oryxis {
             // "open" over a screen that isn't showing it.
             Modal::HighlightRuleEditor => self.highlight_rule_editor_open(),
             Modal::LockVaultConfirm => self.vault_ui.lock_confirm,
+            // The render site's own predicate, so the keyboard layer
+            // and the overlay can never disagree about whether it is up.
+            Modal::UpdateOffer => self.update_modal_shown(),
         }
     }
 
@@ -218,6 +221,16 @@ impl Oryxis {
             Modal::MonitorKill => self.monitor.kill = None,
             // Esc mirrors CancelLockVaultConfirm: don't lock.
             Modal::LockVaultConfirm => self.vault_ui.lock_confirm = false,
+            // Esc is "Later": the offer goes down and a downloaded
+            // artifact stays where it is. Not while the download runs:
+            // with the modal down a completion under live sessions
+            // raises nothing (`offer_update_install`), and the progress
+            // bar is the only sign of a download that ends by asking.
+            Modal::UpdateOffer => {
+                if !self.update_downloading {
+                    self.pending_update = None;
+                }
+            }
         }
     }
 

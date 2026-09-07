@@ -311,6 +311,25 @@ impl Oryxis {
         Task::none()
     }
 
+    /// Whether the update offer is on screen, the one predicate its
+    /// render site and its `Modal` arm share.
+    ///
+    /// The error dialog renders inside `view_main` (below the root
+    /// overlay), so the offer yields while one is up: at boot a failed
+    /// self-update raises the dialog and the update check re-offers the
+    /// same build moments later, and without the gate the offer would
+    /// cover the failure report it is the consequence of. Dismissing the
+    /// dialog reveals the pending offer.
+    ///
+    /// A DOWNLOAD IN FLIGHT never yields: an unrelated async failure (a
+    /// cloud refresh, a dynamic group resolve) can raise a dialog from
+    /// any domain at any moment, and hiding the progress surface would
+    /// not stop the download, which ends by asking to restart. The app
+    /// must not vanish out from under a user reading something else.
+    pub(crate) fn update_modal_shown(&self) -> bool {
+        self.pending_update.is_some() && (self.update_downloading || self.error_dialog.is_none())
+    }
+
     /// The downloaded update is ready: install it now, or wait for the
     /// user when installing would close live sessions.
     ///

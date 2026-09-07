@@ -407,7 +407,10 @@ impl Oryxis {
                         action: Some(crate::state::ErrorDialogAction {
                             label: crate::i18n::t("renderer_restart_now").to_string(),
                             message: Box::new(Message::Settings(SettingsMessage::RelaunchApp)),
-                            danger: false,
+                            // Same rule as the renderer dialog: a restart with live
+                            // sessions is the destructive answer, styled as one and
+                            // not the default row; with nothing live Enter may take it.
+                            danger: self.live_session_tab_count() > 0,
                         }),
                     });
                 }
