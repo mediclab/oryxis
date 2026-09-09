@@ -331,8 +331,24 @@ pub(crate) fn collect_records(
             }
             EntityType::SshKey => {
                 let keys = cached!(key_cache, list_keys);
-                keys.get(&delta.entity_id)
-                    .and_then(|k| encode!(k, "SshKey"))
+                keys.get(&delta.entity_id).and_then(|k| {
+                    // The private key is a credential, so it travels only
+                    // when `sync_passwords` is on, like every other secret.
+                    // There is no `_cleared` companion here: absence always
+                    // means preserve, because a private key is the one
+                    // synced secret its owner cannot retype. See
+                    // `protocol::SyncSshKey`.
+                    let private_key = if sync_passwords {
+                        v.get_key_private(&k.id).ok().flatten()
+                    } else {
+                        None
+                    };
+                    let wrapper = protocol::SyncSshKey {
+                        key: k.clone(),
+                        private_key,
+                    };
+                    encode!(wrapper, "SshKey")
+                })
             }
             EntityType::Identity => {
                 let idents = cached!(ident_cache, list_identities);
@@ -651,8 +667,21 @@ pub(crate) fn apply_records(
                 }
             }
             EntityType::SshKey => {
-                match serde_json::from_slice::<oryxis_core::models::SshKey>(&payload) {
-                    Ok(key) => log_save!(v.save_key(&key, None)),
+                // `SyncSshKey` flattens the model, so a bare `SshKey`
+                // payload from a pre-wrapper peer still deserializes; its
+                // `private_key` resolves to `None` via `#[serde(default)]`,
+                // which is `save_key`'s "keep the existing blob". The
+                // tri-state's clearing arm is deliberately unreachable from
+                // sync: only a tombstone removes a private key from a peer,
+                // which is also why an empty PEM (`Some("")`, the argument
+                // that CLEARS) is filtered rather than trusted. No honest
+                // sender produces one, and a peer is not the authority on
+                // erasing material this device cannot recover.
+                match serde_json::from_slice::<protocol::SyncSshKey>(&payload) {
+                    Ok(sk) => log_save!(v.save_key(
+                        &sk.key,
+                        sk.private_key.as_deref().filter(|pem| !pem.is_empty())
+                    )),
                     Err(e) => tracing::warn!(
                         "sync: bad SshKey payload for {}: {e}",
                         record.entity_id
@@ -1336,6 +1365,164 @@ mod lww_tests {
         let rec = conn_record(id, "remote-new", now);
         apply_records(&vault, &[rec], Some(&SECRET)).unwrap();
         assert_eq!(label_of(&vault, id).as_deref(), Some("remote-new"));
+    }
+
+    /// End-to-end: an SSH key with a private PEM on device A must arrive
+    /// on device B with the private material intact, so it can actually
+    /// authenticate. Regression for the sync path shipping key rows with
+    /// a NULL private column.
+    #[test]
+    fn ssh_key_private_material_survives_collect_apply() {
+        use oryxis_core::models::{KeyAlgorithm, SshKey};
+        let id = Uuid::new_v4();
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-bytes\n-----END OPENSSH PRIVATE KEY-----\n";
+
+        // A: holds the key with its private PEM, sync_passwords on.
+        let a = vault();
+        {
+            let v = a.lock().unwrap();
+            v.set_setting("sync_passwords", "true").unwrap();
+            let mut k = SshKey::new("laptop", KeyAlgorithm::Ed25519);
+            k.id = id;
+            v.save_key(&k, Some(pem)).unwrap();
+        }
+        let needed = vec![protocol::DeltaRef {
+            entity_type: EntityType::SshKey,
+            entity_id: id,
+        }];
+        let records = collect_records(&a, &needed, Some(&SECRET)).unwrap();
+        assert_eq!(records.len(), 1);
+
+        // B: never saw the key. After apply it has the private PEM.
+        let b = vault();
+        apply_records(&b, &records, Some(&SECRET)).unwrap();
+        let got = b.lock().unwrap().get_key_private(&id).unwrap();
+        assert_eq!(got.as_deref(), Some(pem), "private key must survive sync");
+    }
+
+    /// A peer holding the key row WITHOUT private material must never
+    /// erase the copy on the machine that has it. That state is the
+    /// ordinary one, not the exotic one: every key synced by a build
+    /// predating the private-key payload landed on its peers exactly
+    /// like this, and the manifest is `(id, updated_at)`, so nothing
+    /// re-sends it until someone edits the row. Editing it THERE (a
+    /// rename, the expose-via-agent toggle, removing a certificate) is
+    /// what makes that device win LWW, and an authoritative "cleared"
+    /// would take the only copy of the key with it.
+    #[test]
+    fn ssh_key_without_private_material_never_erases_the_peer_copy() {
+        use oryxis_core::models::{KeyAlgorithm, SshKey};
+        let id = Uuid::new_v4();
+
+        // A: has the row, no private material, and the newer stamp.
+        let a = vault();
+        {
+            let v = a.lock().unwrap();
+            v.set_setting("sync_passwords", "true").unwrap();
+            let mut k = SshKey::new("laptop", KeyAlgorithm::Ed25519);
+            k.id = id;
+            v.save_key(&k, None).unwrap();
+        }
+        let needed = vec![protocol::DeltaRef {
+            entity_type: EntityType::SshKey,
+            entity_id: id,
+        }];
+        let records = collect_records(&a, &needed, Some(&SECRET)).unwrap();
+
+        // B: the machine the key was generated on.
+        let b = vault();
+        {
+            let v = b.lock().unwrap();
+            let mut k = SshKey::new("laptop", KeyAlgorithm::Ed25519);
+            k.id = id;
+            k.updated_at = Utc::now() - Duration::seconds(60);
+            v.save_key(&k, Some("origin-pem")).unwrap();
+        }
+        apply_records(&b, &records, Some(&SECRET)).unwrap();
+        assert_eq!(
+            b.lock().unwrap().get_key_private(&id).unwrap().as_deref(),
+            Some("origin-pem"),
+            "a peer with no private material must not erase the origin's key"
+        );
+    }
+
+    /// The wire cannot ask for a clear even by spelling it out: an empty
+    /// PEM is `save_key`'s clearing argument, so it is filtered on apply
+    /// rather than passed through.
+    #[test]
+    fn ssh_key_empty_pem_on_the_wire_does_not_clear() {
+        use oryxis_core::models::{KeyAlgorithm, SshKey};
+        let id = Uuid::new_v4();
+
+        let b = vault();
+        {
+            let v = b.lock().unwrap();
+            let mut k = SshKey::new("laptop", KeyAlgorithm::Ed25519);
+            k.id = id;
+            k.updated_at = Utc::now() - Duration::seconds(60);
+            v.save_key(&k, Some("origin-pem")).unwrap();
+        }
+
+        let mut key = SshKey::new("laptop", KeyAlgorithm::Ed25519);
+        key.id = id;
+        let updated_at = key.updated_at;
+        let wrapper = protocol::SyncSshKey {
+            key,
+            private_key: Some(String::new()),
+        };
+        let cipher = crypto::PayloadCipher::new(&SECRET).unwrap();
+        let records = vec![protocol::SyncRecord {
+            entity_type: EntityType::SshKey,
+            entity_id: id,
+            updated_at,
+            is_deleted: false,
+            payload: cipher.encrypt(&serde_json::to_vec(&wrapper).unwrap()).unwrap(),
+        }];
+        apply_records(&b, &records, Some(&SECRET)).unwrap();
+        assert_eq!(
+            b.lock().unwrap().get_key_private(&id).unwrap().as_deref(),
+            Some("origin-pem"),
+            "an empty PEM must not reach save_key's clearing arm"
+        );
+    }
+
+    /// With `sync_passwords` off, the key row still travels (metadata is
+    /// not a secret) but the private PEM does not, and the receiver's
+    /// copy is left untouched rather than nulled.
+    #[test]
+    fn ssh_key_private_material_withheld_when_passwords_off() {
+        use oryxis_core::models::{KeyAlgorithm, SshKey};
+        let id = Uuid::new_v4();
+
+        let a = vault();
+        {
+            let v = a.lock().unwrap();
+            // sync_passwords left at its default (off).
+            let mut k = SshKey::new("laptop", KeyAlgorithm::Ed25519);
+            k.id = id;
+            v.save_key(&k, Some("-----BEGIN OPENSSH PRIVATE KEY-----\nx\n"))
+                .unwrap();
+        }
+        let needed = vec![protocol::DeltaRef {
+            entity_type: EntityType::SshKey,
+            entity_id: id,
+        }];
+        let records = collect_records(&a, &needed, Some(&SECRET)).unwrap();
+
+        let b = vault();
+        {
+            let v = b.lock().unwrap();
+            let mut k = SshKey::new("laptop", KeyAlgorithm::Ed25519);
+            k.id = id;
+            k.updated_at = Utc::now() - Duration::seconds(60);
+            v.save_key(&k, Some("b-local-pem")).unwrap();
+        }
+        apply_records(&b, &records, Some(&SECRET)).unwrap();
+        assert_eq!(
+            b.lock().unwrap().get_key_private(&id).unwrap().as_deref(),
+            Some("b-local-pem"),
+            "an off switch must not wipe the receiver's private key"
+        );
     }
 
     #[test]

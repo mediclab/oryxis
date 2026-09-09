@@ -410,6 +410,38 @@ pub struct SyncIdentity {
     pub password_cleared: bool,
 }
 
+/// SSH key wrapper: the flattened `SshKey` model carries only public
+/// material (`public_key`, `fingerprint`, `algorithm`, …), so the private
+/// key rides alongside it here. Without this field a peer receives a key
+/// row with a NULL private column and cannot authenticate with it. Sent
+/// only when `sync_passwords` is on, exactly like the connection and
+/// identity passwords.
+///
+/// This is the one secret wrapper with NO `_cleared` companion, and that
+/// asymmetry is the point: a private key is the only synced secret its
+/// owner cannot retype. A missing value therefore always means
+/// "preserve", never "erase". Nothing legitimate would produce a clear
+/// anyway (no `save_key` call site strips private material from a row it
+/// keeps, and a public-only FIDO2-SK row is public-only on every device
+/// because the id was minted once), while three ordinary things produce
+/// a key row that merely LOOKS empty: a peer that received the row from
+/// a build predating this field, `sync_passwords` off on the sender, and
+/// a `get_key_private` that simply failed to decrypt. Under LWW any of
+/// those would out-rank and destroy the origin's only copy. Removing a
+/// key from a device stays the tombstone's job (`delete_key`), which is
+/// explicit and mirrors the deletion the user actually asked for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncSshKey {
+    #[serde(flatten)]
+    pub key: oryxis_core::models::SshKey,
+    /// Private-key PEM in its stored form (it may itself be
+    /// passphrase-encrypted; that is opaque to sync). `None` on the wire
+    /// means "preserve the receiver's copy": legacy payloads, a sender
+    /// with `sync_passwords` off, and a public-only row all send that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncProxyIdentity {
     #[serde(flatten)]
@@ -771,6 +803,41 @@ mod tests {
         let bytes = serde_json::to_vec(&wrapper).unwrap();
         let back: SyncIdentity = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(back.password.as_deref(), Some("ident-pw"));
+    }
+
+    #[test]
+    fn sync_ssh_key_round_trip_with_private_key() {
+        let key = oryxis_core::models::SshKey::new(
+            "laptop",
+            oryxis_core::models::KeyAlgorithm::Ed25519,
+        );
+        let wrapper = SyncSshKey {
+            key,
+            private_key: Some("-----BEGIN OPENSSH PRIVATE KEY-----\nx\n".into()),
+        };
+        let bytes = serde_json::to_vec(&wrapper).unwrap();
+        let back: SyncSshKey = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            back.private_key.as_deref(),
+            Some("-----BEGIN OPENSSH PRIVATE KEY-----\nx\n")
+        );
+        assert_eq!(back.key.label, "laptop");
+    }
+
+    /// A pre-wrapper peer sends a bare `SshKey` JSON (no `private_key`
+    /// field). The wrapper must accept it and resolve `private_key` to
+    /// `None` = preserve, not to a spurious clear. Symmetric to the
+    /// connection / identity legacy tests above.
+    #[test]
+    fn sync_ssh_key_accepts_legacy_payload() {
+        let key = oryxis_core::models::SshKey::new(
+            "old-key",
+            oryxis_core::models::KeyAlgorithm::Ed25519,
+        );
+        let bare = serde_json::to_vec(&key).unwrap();
+        let wrapped: SyncSshKey = serde_json::from_slice(&bare).unwrap();
+        assert_eq!(wrapped.key.label, "old-key");
+        assert!(wrapped.private_key.is_none());
     }
 
     #[test]
