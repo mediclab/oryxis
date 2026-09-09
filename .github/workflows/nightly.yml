@@ -166,6 +166,8 @@ jobs:
           mkdir -p dist
           cp target/release/oryxis dist/
           cp README.md resources/logo_64.png dist/
+          # Gatekeeper steps, including what the bare .bin below is for.
+          cp resources/INSTALL-macOS.md dist/
           cd dist && tar czf ../oryxis-nightly-macos-aarch64.tar.gz *
           cd .. && cp target/release/oryxis oryxis-nightly-macos-aarch64.bin
       - uses: actions/upload-artifact@v7
