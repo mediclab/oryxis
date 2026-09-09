@@ -69,6 +69,21 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.18.0" date="2026-09-09">
+      <description>
+        <p>
+          Adds an offline mode that stops Oryxis making any request of
+          its own, with an offline bundle per platform carrying the app,
+          every plugin and the pinned fonts for a machine that never had
+          a network. Fixes SSH keys syncing without their private half,
+          P2P sync losing a device that changed address or port, Touch ID
+          unlock never turning on, a terminal selection staying glued to
+          screen rows while output scrolled, and Chinese rendering from
+          the wrong faces on recent macOS.
+        </p>
+      </description>
+      <url>https://github.com/wilsonglasser/oryxis/releases/tag/v0.18.0</url>
+    </release>
     <release version="0.17.0" date="2026-09-07">
       <description>
         <p>

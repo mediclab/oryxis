@@ -4,16 +4,23 @@ All notable changes to Oryxis are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.18.0] - 2026-09-09
+
+Offline mode: Oryxis can be told to make no request of its own, and an offline bundle carries the plugins and fonts a machine with no network would otherwise download. Alongside it, sync stops losing track of a device that moved, an SSH key arrives usable on the peer that received it, and Touch ID unlock works for the first time.
 
 ### Added
-- Offline mode (Settings > Advanced, and the first-run features step): Oryxis makes no request of its own. Update checks, font downloads and the plugin catalog go quiet, manual ones included, and each surface says so where it would have acted; hosts, AI, sync and cloud accounts are untouched. Turning it off restores everything at once.
-- An offline bundle per platform (`oryxis-offline-<platform>-<arch>`) next to every release: the app, every plugin and the font packs, with offline mode already on at first run. Plugins seed the ordinary cache through the same signature gate a download passes.
+- Offline mode (Settings > Advanced, and the first-run features step): update checks, font downloads and the plugin catalog go quiet, manual ones included.
+- Hosts, AI, sync and cloud accounts still travel while it is on, and each surface says so where it would have acted.
+- An offline bundle per platform (`oryxis-offline-<platform>-<arch>`) beside every release: the app, every plugin and the pinned fonts, with offline mode already on at first run.
 
 ### Fixed
-- P2P sync survives a restart again: an automatic listen port is chosen once and kept, and a peer seen on the local network has its address written down, so a device that moved (new port, new DHCP lease) is dialled where it is rather than where it was paired (#219).
-- Touch ID unlock could never be turned on: enrolment asked for a Keychain item that gates itself, which lives only in a keychain a paid Apple developer identity can reach. The presence check is now raised around the read, so it works on the build we ship (#222, diagnosed by @mediclab).
-- A vault with a master password booted its update check and font downloads on the default download mirror whatever the setting said, and never healed the configured terminal font at launch.
+- An SSH key syncs with its private half, so it can authenticate on the device that received it (#221, by @mediclab).
+- A key that synced before that is offered again once, from the device holding the private material.
+- P2P sync survives a restart: an automatic listen port is kept, and a peer seen on the local network has its address written down (#219, reported by @mediclab).
+- Touch ID unlock can be turned on at last, on the build we ship (#222, diagnosed by @mediclab).
+- The terminal selection moves with its text instead of staying glued to screen rows while output scrolls (#220, diagnosed by @shideqin).
+- Chinese renders from the downloaded font on macOS 15 and later, instead of one face per character (#189).
+- A vault with a master password honours the download mirror at boot, and heals the terminal font it actually has configured.
 - A first run no longer checks for updates before the onboarding is answered.
 
 ## [0.17.0] - 2026-09-07
