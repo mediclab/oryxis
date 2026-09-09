@@ -1234,6 +1234,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "リレー URL",
         "sync_relay_optional" => "リレー URL（任意）...",
         "sync_listen_port" => "受信ポート",
+        "sync_listen_port_hint" => "0 は空きポートを一度だけ選び、再起動後も同じポートを使い続けます。ペアリング済みの端末がこの端末を見つけ続けられます。",
         "sync_health_lan" => "台のデバイスがこのネットワークで検出されました",
         "sync_wizard_button" => "自分のリレーをセットアップ",
         "sync_wizard_intro" => "オープンソースの oryxis-relay を自分の管理するサーバーで実行します。ドメインを入力し、生成されたファイルをサーバーで実行してから接続をテストしてください。テストに合格すると、エンドポイントが上のフィールドに保存されます。",

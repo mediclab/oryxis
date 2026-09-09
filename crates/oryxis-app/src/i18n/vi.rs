@@ -812,6 +812,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "URL Relay",
         "sync_relay_optional" => "URL relay tùy chọn...",
         "sync_listen_port" => "Cổng lắng nghe",
+        "sync_listen_port_hint" => "0 chọn một cổng trống một lần và giữ nguyên sau khi khởi động lại, để thiết bị đã ghép đôi vẫn tìm thấy máy này.",
         "sync_health_lan" => "thiết bị được phát hiện trong mạng này",
         "sync_wizard_button" => "Tự thiết lập relay của bạn",
         "sync_wizard_intro" => "Chạy oryxis-relay mã nguồn mở trên máy chủ do bạn kiểm soát. Điền tên miền, chạy tệp được tạo trên máy chủ, rồi kiểm tra kết nối; nếu kiểm tra thành công, endpoint sẽ được lưu vào các trường phía trên.",

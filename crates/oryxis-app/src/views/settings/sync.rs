@@ -1624,6 +1624,8 @@ impl Oryxis {
             text(crate::i18n::t("sync_listen_port")).size(12).color(OryxisColors::t().text_muted),
             Space::new().height(4),
             port_input,
+            Space::new().height(4),
+            text(crate::i18n::t("sync_listen_port_hint")).size(11).color(OryxisColors::t().text_muted),
         ];
 
         panel_section(

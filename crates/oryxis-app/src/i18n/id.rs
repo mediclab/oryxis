@@ -812,6 +812,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "URL Relay",
         "sync_relay_optional" => "URL relay opsional...",
         "sync_listen_port" => "Port Dengar",
+        "sync_listen_port_hint" => "0 memilih port bebas sekali dan mempertahankannya setelah restart, sehingga perangkat yang dipasangkan tetap menemukan yang ini.",
         "sync_health_lan" => "perangkat ditemukan di jaringan ini",
         "sync_wizard_button" => "Siapkan relay Anda sendiri",
         "sync_wizard_intro" => "Jalankan oryxis-relay open source di server yang Anda kendalikan. Isi domain Anda, jalankan file yang dihasilkan di server, lalu uji koneksinya; jika uji berhasil, endpoint disimpan ke kolom di atas.",

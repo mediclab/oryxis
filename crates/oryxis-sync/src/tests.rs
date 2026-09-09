@@ -934,4 +934,147 @@ mod tests {
             "expected a snapshot-version rejection, got: {msg}"
         );
     }
+
+    // ── The automatic listen port, and the address a peer moved to (#219) ──
+
+    /// A free UDP port, released before it is returned. Used to name a
+    /// port the engine is expected to ask for.
+    fn free_udp_port() -> u16 {
+        let probe = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        probe.local_addr().unwrap().port()
+    }
+
+    fn auto_port_engine(vault: Arc<Mutex<VaultStore>>, name: &str) -> SyncEngine {
+        let config = SyncConfig {
+            enabled: true,
+            mode: SyncMode::Manual,
+            listen_port: 0,
+            ..SyncConfig::default()
+        };
+        let mut engine = SyncEngine::new(config, DeviceIdentity::generate(name), vault);
+        let _events = engine.take_events();
+        engine
+    }
+
+    /// The port an automatic bind lands on is written down, so the next
+    /// start can ask for it instead of taking a fresh one and stranding
+    /// every endpoint a peer recorded at pairing time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_automatic_listen_port_is_remembered() {
+        let vault = Arc::new(Mutex::new(test_vault()));
+        let mut engine = auto_port_engine(vault.clone(), "auto-remember");
+        engine.start().unwrap();
+
+        let bound = engine.listen_port();
+        assert_ne!(bound, 0, "an automatic bind must land on a real port");
+        let stored = vault
+            .lock()
+            .unwrap()
+            .get_setting("sync_listen_port_auto")
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some(bound.to_string().as_str()));
+    }
+
+    /// And it is asked for on the next start, which is what keeps a
+    /// pairing alive across a restart.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_remembered_listen_port_is_asked_for_again() {
+        let vault = Arc::new(Mutex::new(test_vault()));
+        let wanted = free_udp_port();
+        vault
+            .lock()
+            .unwrap()
+            .set_setting("sync_listen_port_auto", &wanted.to_string())
+            .unwrap();
+
+        let mut engine = auto_port_engine(vault, "auto-reuse");
+        engine.start().unwrap();
+        assert_eq!(
+            engine.listen_port(),
+            wanted,
+            "a free remembered port must be the one bound"
+        );
+    }
+
+    /// The remembered port is a preference, not a requirement: with it
+    /// held by something else, sync still starts and remembers the port
+    /// it actually got.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_busy_remembered_port_is_replaced_not_fatal() {
+        let vault = Arc::new(Mutex::new(test_vault()));
+        let squatter = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let taken = squatter.local_addr().unwrap().port();
+        vault
+            .lock()
+            .unwrap()
+            .set_setting("sync_listen_port_auto", &taken.to_string())
+            .unwrap();
+
+        let mut engine = auto_port_engine(vault.clone(), "auto-busy");
+        engine.start().expect("a busy remembered port must not stop sync");
+
+        let bound = engine.listen_port();
+        assert_ne!(bound, 0);
+        assert_ne!(bound, taken, "the squatted port cannot have been bound");
+        assert_eq!(
+            vault
+                .lock()
+                .unwrap()
+                .get_setting("sync_listen_port_auto")
+                .unwrap()
+                .as_deref(),
+            Some(bound.to_string().as_str()),
+            "the port actually bound replaces the one that was busy"
+        );
+        drop(squatter);
+    }
+
+    #[test]
+    fn a_lan_sighting_is_news_only_when_it_changes_the_route() {
+        use crate::engine::lan_endpoint_is_news;
+        let seen: std::net::SocketAddr = "192.168.1.50:41234".parse().unwrap();
+
+        // The address we already hold: mDNS republishes constantly and
+        // must not become a vault write per announcement.
+        assert!(!lan_endpoint_is_news(Some("192.168.1.50"), Some(41234), seen));
+        // Same host, the port moved (the #219 case).
+        assert!(lan_endpoint_is_news(Some("192.168.1.50"), Some(4433), seen));
+        // Same port, the host moved (DHCP).
+        assert!(lan_endpoint_is_news(Some("192.168.1.9"), Some(41234), seen));
+        // Paired over the relay, or the sentinel the session code reads
+        // as "no direct route": a sighting is exactly that route.
+        assert!(lan_endpoint_is_news(None, None, seen));
+        assert!(lan_endpoint_is_news(Some("0.0.0.0"), Some(0), seen));
+        // Nothing dialable: port 0, and a link-local v6 address whose
+        // scope the dial drops.
+        assert!(!lan_endpoint_is_news(Some("192.168.1.9"), Some(4433), "192.168.1.50:0".parse().unwrap()));
+        assert!(!lan_endpoint_is_news(
+            Some("192.168.1.9"),
+            Some(4433),
+            "[fe80::1]:41234".parse().unwrap()
+        ));
+    }
+
+    /// The write itself: a known peer's endpoint follows it, and a
+    /// device nobody paired with never gets a row.
+    #[test]
+    fn a_sighting_moves_a_known_peer_and_only_a_known_peer() {
+        use crate::engine::remember_lan_endpoint;
+        let vault = Arc::new(Mutex::new(test_vault()));
+        let peer_id = Uuid::new_v4();
+        {
+            let v = vault.lock().unwrap();
+            v.save_sync_peer(&peer_id, "laptop", &[7u8; 32], None, &chrono::Utc::now())
+                .unwrap();
+            v.update_sync_peer_endpoint(&peer_id, "192.168.1.50", 4433).unwrap();
+        }
+
+        remember_lan_endpoint(&vault, peer_id, "192.168.1.51:41234".parse().unwrap());
+        remember_lan_endpoint(&vault, Uuid::new_v4(), "192.168.1.52:41235".parse().unwrap());
+
+        let peers = vault.lock().unwrap().list_sync_peers().unwrap();
+        assert_eq!(peers.len(), 1, "a sighting must never create a peer");
+        assert_eq!(peers[0].last_known_ip.as_deref(), Some("192.168.1.51"));
+        assert_eq!(peers[0].last_known_port, Some(41234));
+    }
 }

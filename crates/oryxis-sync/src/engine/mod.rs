@@ -178,6 +178,76 @@ pub(super) const MAX_PAIRING_ATTEMPTS: u32 = 3;
 /// don't expect to be at the cap under normal use).
 pub(super) const MAX_PAIRING_SOURCES: usize = 1024;
 
+/// Settings key remembering the port an automatic bind landed on. It is
+/// deliberately NOT `sync_listen_port` (which stays the user's own `0` =
+/// "pick one for me") and it is device-local: `portable.rs` denies it,
+/// and settings do not sync, so one machine's port can never become
+/// another's.
+const AUTO_PORT_SETTING: &str = "sync_listen_port_auto";
+
+/// Whether a LAN sighting of `seen` is news for a peer whose recorded
+/// endpoint is `stored`.
+///
+/// Pure so the rule is testable without a bus: mDNS republishes
+/// constantly, so "the address we already hold" must not become a vault
+/// write per announcement. A peer with NO endpoint (paired over the
+/// relay, or the `0.0.0.0` sentinel the session code reads as "no direct
+/// route") gains one here, which is exactly what a sighting on the same
+/// network means.
+pub(crate) fn lan_endpoint_is_news(
+    stored_ip: Option<&str>,
+    stored_port: Option<u16>,
+    seen: SocketAddr,
+) -> bool {
+    if seen.port() == 0 {
+        return false;
+    }
+    // A link-local v6 address is only meaningful with the interface it
+    // was seen on, and the dial drops the scope, so recording one would
+    // replace a working endpoint with an address that can never connect.
+    // (`is_unicast_link_local` is still unstable, hence the prefix test.)
+    if let std::net::IpAddr::V6(v6) = seen.ip() {
+        if v6.segments()[0] & 0xffc0 == 0xfe80 {
+            return false;
+        }
+    }
+    match (stored_ip, stored_port) {
+        (Some(ip), Some(port)) => ip != seen.ip().to_string() || port != seen.port(),
+        _ => true,
+    }
+}
+
+/// Record a LAN sighting as a known peer's endpoint.
+///
+/// Known peers only: a sighting never creates a row, so an unpaired
+/// device announcing itself writes nothing. An impostor announcing a
+/// PAIRED device's id can re-point the dial, and
+/// `crypto::verify_session_handshake` refuses it on the far side, so
+/// the whole cost of that lie is one 5s direct-tier timeout before the
+/// relay fallback; it can never open a session.
+pub(crate) fn remember_lan_endpoint(
+    vault: &Arc<std::sync::Mutex<VaultStore>>,
+    device_id: Uuid,
+    addr: SocketAddr,
+) {
+    let Ok(vault) = vault.lock() else {
+        return;
+    };
+    let Ok(peers) = vault.list_sync_peers() else {
+        return;
+    };
+    let Some(peer) = peers.iter().find(|p| p.peer_id == device_id) else {
+        return;
+    };
+    if !lan_endpoint_is_news(peer.last_known_ip.as_deref(), peer.last_known_port, addr) {
+        return;
+    }
+    match vault.update_sync_peer_endpoint(&device_id, &addr.ip().to_string(), addr.port()) {
+        Ok(()) => tracing::info!("sync: peer {device_id} is now at {addr} on this network"),
+        Err(e) => tracing::warn!("sync: could not record {device_id}'s address: {e}"),
+    }
+}
+
 /// Tombstones older than this drop on engine boot. Should outlive any
 /// realistic offline gap between a paired peer's syncs; a peer that
 /// reconnects after the window will silently miss the deletion (and
@@ -289,18 +359,19 @@ impl SyncEngine {
         self.shutdown_tx = Some(shutdown_tx.clone());
 
         // Start QUIC server
-        let endpoint = transport::create_server_endpoint(
-            &self.identity.device_id,
-            self.config.listen_port,
-        )?;
+        let endpoint = self.bind_server_endpoint()?;
 
         let listen_port = endpoint
             .local_addr()
             .map(|a| a.port())
             .unwrap_or(0);
         // Remember the actually-bound port so `SyncHandle` can advertise
-        // it to pairing joiners (the configured port may have been 0).
+        // it to pairing joiners (the configured port may have been 0),
+        // and, when the port was automatic, keep it for the next start.
         self.bound_port = listen_port;
+        if self.config.listen_port == 0 {
+            self.remember_auto_port(listen_port);
+        }
 
         // Start mDNS registration and browsing. The `ServiceDaemon`s
         // have to stay alive for as long as sync is running, so we
@@ -315,11 +386,24 @@ impl SyncEngine {
 
         // Forward discovery events
         let event_tx = self.event_tx.clone();
+        let discovery_vault = self.vault.clone();
         let mut shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     Some(peer) = discovery_rx.recv() => {
+                        // A sighting on the LAN is the freshest address
+                        // a paired peer has, and until now nothing wrote
+                        // it down: the endpoint recorded AT PAIRING was
+                        // the only one tier 1 ever dialled, so a peer
+                        // that moved (DHCP, or an automatic listen port
+                        // that used to move on every start) stayed
+                        // unreachable until it was paired again (#219).
+                        remember_lan_endpoint(
+                            &discovery_vault,
+                            peer.device_id,
+                            peer.addr,
+                        );
                         let _ = event_tx.send(SyncEvent::PeerDiscovered {
                             device_id: peer.device_id,
                             device_name: String::new(),
@@ -732,6 +816,68 @@ impl SyncEngine {
     /// The QUIC port the server bound. Zero until `start()` has run.
     pub fn listen_port(&self) -> u16 {
         self.bound_port
+    }
+
+    /// Bind the QUIC server, keeping an AUTOMATIC port across restarts.
+    ///
+    /// `listen_port = 0` means "any free port", and it used to mean a
+    /// different one on every start, which quietly expired every
+    /// pairing: a peer dials the endpoint it recorded when it paired,
+    /// so a port that moves under it makes the direct tier fail from
+    /// the first restart onwards (#219). The port a first automatic
+    /// bind lands on is therefore written down and asked for again.
+    ///
+    /// It stays a PREFERENCE, never a requirement: if something else
+    /// holds it now, the bind falls back to an OS-assigned port and
+    /// that one is remembered instead. Refusing to start sync over a
+    /// port nobody chose would cost more than the address it protects,
+    /// and the LAN sighting path above repairs the peers that cared.
+    ///
+    /// A configured (non-zero) port is untouched by all of this: the
+    /// user named it, so failing to bind it stays an error.
+    fn bind_server_endpoint(&self) -> Result<quinn::Endpoint, SyncError> {
+        if self.config.listen_port != 0 {
+            return transport::create_server_endpoint(
+                &self.identity.device_id,
+                self.config.listen_port,
+            );
+        }
+        if let Some(port) = self.remembered_auto_port() {
+            match transport::create_server_endpoint(&self.identity.device_id, port) {
+                Ok(endpoint) => return Ok(endpoint),
+                Err(e) => tracing::warn!(
+                    "sync: the remembered listen port {port} is unavailable ({e}); \
+                     taking a new one"
+                ),
+            }
+        }
+        transport::create_server_endpoint(&self.identity.device_id, 0)
+    }
+
+    /// The port a previous automatic bind landed on, if any.
+    fn remembered_auto_port(&self) -> Option<u16> {
+        let vault = self.vault.lock().ok()?;
+        let raw = vault.get_setting(AUTO_PORT_SETTING).ok()??;
+        raw.parse::<u16>().ok().filter(|p| *p != 0)
+    }
+
+    /// Write down the port an automatic bind landed on, so the next
+    /// start asks for it. Silent on failure: this is an optimisation
+    /// for the peers, never a condition for sync to run.
+    fn remember_auto_port(&self, port: u16) {
+        if port == 0 {
+            return;
+        }
+        let Ok(vault) = self.vault.lock() else {
+            return;
+        };
+        let stored = vault.get_setting(AUTO_PORT_SETTING).ok().flatten();
+        if stored.as_deref() == Some(port.to_string().as_str()) {
+            return;
+        }
+        if let Err(e) = vault.set_setting(AUTO_PORT_SETTING, &port.to_string()) {
+            tracing::warn!("sync: could not remember the listen port: {e}");
+        }
     }
 
     /// Get the config.

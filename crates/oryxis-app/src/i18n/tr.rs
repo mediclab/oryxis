@@ -812,6 +812,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "Relay URL'si",
         "sync_relay_optional" => "İsteğe bağlı relay URL'si...",
         "sync_listen_port" => "Dinleme Portu",
+        "sync_listen_port_hint" => "0, bir kez boş bir port seçer ve yeniden başlatmalar arasında korur; böylece eşleştirilmiş cihaz bu cihazı bulmayı sürdürür.",
         "sync_health_lan" => "cihaz bu ağda keşfedildi",
         "sync_wizard_button" => "Kendi relay'inizi kurun",
         "sync_wizard_intro" => "Açık kaynaklı oryxis-relay'i kontrolünüzdeki bir sunucuda çalıştırın. Alan adınızı girin, oluşturulan dosyayı sunucuda çalıştırın, sonra bağlantıyı test edin; test başarılı olursa uç nokta yukarıdaki alanlara kaydedilir.",

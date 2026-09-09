@@ -822,6 +822,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "Adres URL przekaźnika",
         "sync_relay_optional" => "Opcjonalny adres URL przekaźnika...",
         "sync_listen_port" => "Port nasłuchu",
+        "sync_listen_port_hint" => "0 wybiera wolny port raz i zachowuje go po ponownym uruchomieniu, dzięki czemu sparowane urządzenie nadal znajduje to urządzenie.",
         "sync_health_lan" => "urządzenie(a) wykryte w tej sieci",
         "sync_wizard_button" => "Skonfiguruj własny przekaźnik",
         "sync_wizard_intro" => "Uruchom otwartoźródłowy oryxis-relay na serwerze, który kontrolujesz. Wpisz swoją domenę, uruchom wygenerowany plik na serwerze, a następnie przetestuj połączenie; po udanym teście punkt końcowy zostanie zapisany w polach powyżej.",

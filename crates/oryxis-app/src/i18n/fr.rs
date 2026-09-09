@@ -1234,6 +1234,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "URL du relais",
         "sync_relay_optional" => "URL du relais optionnelle...",
         "sync_listen_port" => "Port d'écoute",
+        "sync_listen_port_hint" => "0 choisit un port libre une fois et le conserve après un redémarrage, pour qu'un appareil appairé continue de trouver celui-ci.",
         "sync_health_lan" => "appareil(s) découvert(s) sur ce réseau",
         "sync_wizard_button" => "Configurer votre propre relais",
         "sync_wizard_intro" => "Exécutez oryxis-relay, open source, sur un serveur que vous contrôlez. Renseignez votre domaine, exécutez le fichier généré sur le serveur, puis testez la connexion ; si le test réussit, le point de terminaison est enregistré dans les champs ci-dessus.",

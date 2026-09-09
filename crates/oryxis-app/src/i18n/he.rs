@@ -818,6 +818,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "כתובת Relay",
         "sync_relay_optional" => "כתובת relay אופציונלית...",
         "sync_listen_port" => "פורט האזנה",
+        "sync_listen_port_hint" => "הערך 0 בוחר פורט פנוי פעם אחת ושומר עליו גם לאחר הפעלה מחדש, כך שמכשיר מקושר ימשיך למצוא את המכשיר הזה.",
         "sync_health_lan" => "מכשיר(ים) התגלו ברשת זו",
         "sync_wizard_button" => "הקמת relay משלך",
         "sync_wizard_intro" => "הריצו את oryxis-relay בקוד פתוח על שרת בשליטתכם. מלאו את הדומיין, הריצו את הקובץ שנוצר על השרת ואז בדקו את החיבור; אם הבדיקה עוברת, הכתובת נשמרת בשדות שלמעלה.",

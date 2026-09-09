@@ -818,6 +818,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "URL relay serveru",
         "sync_relay_optional" => "Volitelná URL relay serveru...",
         "sync_listen_port" => "Port naslouchání",
+        "sync_listen_port_hint" => "0 vybere volný port jednou a zachová jej i po restartu, takže spárované zařízení toto zařízení dál najde.",
         "sync_health_lan" => "zařízení nalezeno v této síti",
         "sync_wizard_button" => "Nastavit vlastní relay server",
         "sync_wizard_intro" => "Spusťte open source oryxis-relay na serveru pod vaší kontrolou. Vyplňte svou doménu, spusťte vygenerovaný soubor na serveru a pak otestujte spojení; po úspěšném testu se endpoint uloží do polí výše.",

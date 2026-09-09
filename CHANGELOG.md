@@ -11,6 +11,7 @@ project uses [SemVer](https://semver.org/spec/v2.0.0.html).
 - An offline bundle per platform (`oryxis-offline-<platform>-<arch>`) next to every release: the app, every plugin and the font packs, with offline mode already on at first run. Plugins seed the ordinary cache through the same signature gate a download passes.
 
 ### Fixed
+- P2P sync survives a restart again: an automatic listen port is chosen once and kept, and a peer seen on the local network has its address written down, so a device that moved (new port, new DHCP lease) is dialled where it is rather than where it was paired (#219).
 - Touch ID unlock could never be turned on: enrolment asked for a Keychain item that gates itself, which lives only in a keychain a paid Apple developer identity can reach. The presence check is now raised around the read, so it works on the build we ship (#222, diagnosed by @mediclab).
 - A vault with a master password booted its update check and font downloads on the default download mirror whatever the setting said, and never healed the configured terminal font at launch.
 - A first run no longer checks for updates before the onboarding is answered.

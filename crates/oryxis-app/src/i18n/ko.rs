@@ -812,6 +812,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "릴레이 URL",
         "sync_relay_optional" => "선택적 릴레이 URL...",
         "sync_listen_port" => "수신 포트",
+        "sync_listen_port_hint" => "0은 빈 포트를 한 번 골라 재시작 후에도 유지하므로, 페어링된 기기가 이 기기를 계속 찾을 수 있습니다.",
         "sync_health_lan" => "대의 기기가 이 네트워크에서 발견됨",
         "sync_wizard_button" => "자체 릴레이 설정",
         "sync_wizard_intro" => "오픈소스 oryxis-relay를 직접 관리하는 서버에서 실행하세요. 도메인을 입력하고 생성된 파일을 서버에서 실행한 뒤 연결을 테스트하세요. 테스트를 통과하면 엔드포인트가 위 필드에 저장됩니다.",

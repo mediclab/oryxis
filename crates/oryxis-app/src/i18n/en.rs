@@ -818,6 +818,7 @@ pub(super) fn lookup(key: &str) -> &'static str {
         "sync_relay_url" => "Relay URL",
         "sync_relay_optional" => "Optional relay URL...",
         "sync_listen_port" => "Listen Port",
+        "sync_listen_port_hint" => "0 picks a free port once and keeps it across restarts, so a paired device keeps finding this one.",
         "sync_health_lan" => "device(s) discovered on this network",
         "sync_wizard_button" => "Set up your own relay",
         "sync_wizard_intro" => "Run the open-source oryxis-relay on a server you control. Fill in your domain, run the generated file on the server, then test the connection; passing the test saves the endpoint into the fields above.",

@@ -1234,6 +1234,7 @@ pub(super) fn lookup(key: &str) -> Option<&'static str> {
         "sync_relay_url" => "中继 URL",
         "sync_relay_optional" => "可选的中继 URL...",
         "sync_listen_port" => "监听端口",
+        "sync_listen_port_hint" => "0 只挑选一次空闲端口并在重启后继续使用，配对设备因此仍能找到本机。",
         "sync_health_lan" => "台设备已在此网络中被发现",
         "sync_wizard_button" => "搭建您自己的中继",
         "sync_wizard_intro" => "在您掌控的服务器上运行开源的 oryxis-relay。填写您的域名，在服务器上运行生成的文件，然后测试连接；测试通过后，端点会保存到上方字段中。",

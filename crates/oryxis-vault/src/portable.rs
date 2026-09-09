@@ -337,6 +337,10 @@ pub(crate) fn is_portable_setting(key: &str) -> bool {
         "has_user_password",
         "sync_device_name",
         "sync_listen_port",
+        // The port an automatic bind landed on and asked for again. It
+        // describes one machine's socket, so carrying it would have the
+        // importing device fight for a port it never chose.
+        "sync_listen_port_auto",
         "sync_signaling_token",
         // Encrypted under THIS vault's master key, so the verbatim
         // value `list_settings` hands out arrives as bytes the target
