@@ -114,6 +114,30 @@ impl VaultStore {
         Ok(keys)
     }
 
+    /// Stamp `updated_at` on every key row that HOLDS private material,
+    /// and report how many were touched.
+    ///
+    /// The sync manifest is `(id, updated_at)` with no content hash, so a
+    /// key row a peer already carries is never re-offered until something
+    /// moves that stamp. A key that reached the peer before the wire
+    /// payload carried the private half therefore sits there unusable,
+    /// with no gesture short of editing the row to dislodge it. This is
+    /// that gesture, once, for the rows that have something to send.
+    ///
+    /// The `IS NOT NULL` filter is what makes the direction safe rather
+    /// than merely convenient: only a device HOLDING the key raises its
+    /// stamp, so last-writer-wins resolves in favour of the copy with the
+    /// material every time. A row whose private column is NULL is left
+    /// exactly as it was, because it is the one that must never win.
+    /// `created_at` is untouched: the key was not created today.
+    pub fn touch_keys_with_private_material(&self) -> Result<usize, VaultError> {
+        let n = self.db.execute(
+            "UPDATE keys SET updated_at = ?1 WHERE private_key IS NOT NULL",
+            params![chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(n)
+    }
+
     /// Get the decrypted private key PEM.
     pub fn get_key_private(&self, id: &Uuid) -> Result<Option<String>, VaultError> {
         self.require_unlocked()?;

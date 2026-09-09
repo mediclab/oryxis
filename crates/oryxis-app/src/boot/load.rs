@@ -352,6 +352,47 @@ impl Oryxis {
                     let _ = vault.set_setting("sync_hosted_migrated", "true");
                 }
             }
+            // A key that synced before the wire payload carried the private
+            // half sits on its peers with a NULL private column, and the
+            // manifest is `(id, updated_at)` with no content hash, so
+            // nothing re-offers it until the row is edited. Stamp the rows
+            // that HOLD private material once, so the device that has the
+            // key offers it again; the filter is what keeps the direction
+            // right, since only that device raises a stamp.
+            if vault
+                .get_setting("sync_key_private_migrated")
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                let syncing =
+                    matches!(vault.get_setting("sync_enabled"), Ok(Some(v)) if v == "true");
+                let secrets =
+                    matches!(vault.get_setting("sync_passwords"), Ok(Some(v)) if v == "true");
+                // Both are required for the stamp to carry anything: with
+                // password sync off the payload omits the PEM, so a pass
+                // now would spend the migration on rows that still travel
+                // empty. Leaving the flag unset defers it to the boot
+                // after the user turns them on, the way the hosted
+                // migration above defers when it cannot complete.
+                if syncing && secrets {
+                    match vault.touch_keys_with_private_material() {
+                        Ok(count) => {
+                            tracing::info!(
+                                target: "oryxis::boot",
+                                count,
+                                "re-offering keys that hold private material"
+                            );
+                            let _ = vault.set_setting("sync_key_private_migrated", "true");
+                        }
+                        Err(e) => tracing::warn!(
+                            target: "oryxis::boot",
+                            error = %e,
+                            "could not re-offer keys holding private material"
+                        ),
+                    }
+                }
+            }
             if let Ok(Some(v)) = vault.get_setting("sync_signaling_url") {
                 self.sync.signaling_url = v;
             }

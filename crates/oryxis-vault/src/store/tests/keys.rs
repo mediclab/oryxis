@@ -112,3 +112,49 @@ fn key_has_updated_at() {
     assert!(keys[0].updated_at.timestamp() > 0);
 }
 
+
+/// The re-offer pass stamps only the rows that have something to send.
+/// A public-only row keeps its stamp, which is what keeps last-writer-
+/// wins pointing at the device that holds the material rather than at
+/// the one that received an empty row from an older peer.
+#[test]
+fn touch_only_stamps_keys_that_hold_private_material() {
+    let vault = unlocked_vault();
+
+    let with_private = SshKey::new("has-material", KeyAlgorithm::Ed25519);
+    vault
+        .save_key(&with_private, Some("-----BEGIN PRIVATE KEY-----\nx\n"))
+        .unwrap();
+
+    let public_only = SshKey::new("public-only", KeyAlgorithm::SkEd25519);
+    vault.save_key(&public_only, None).unwrap();
+
+    let before: std::collections::HashMap<_, _> = vault
+        .list_keys()
+        .unwrap()
+        .into_iter()
+        .map(|k| (k.id, k.updated_at))
+        .collect();
+
+    // The stamp is second-resolution on the wire, so make the change
+    // observable rather than racing the same instant.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(vault.touch_keys_with_private_material().unwrap(), 1);
+
+    let after: std::collections::HashMap<_, _> = vault
+        .list_keys()
+        .unwrap()
+        .into_iter()
+        .map(|k| (k.id, k.updated_at))
+        .collect();
+    assert!(
+        after[&with_private.id] > before[&with_private.id],
+        "a key holding private material must be re-offered"
+    );
+    assert_eq!(
+        after[&public_only.id], before[&public_only.id],
+        "a row with no material must not out-rank the device that has it"
+    );
+    // The material itself is untouched by the stamp.
+    assert!(vault.get_key_private(&with_private.id).unwrap().is_some());
+}
