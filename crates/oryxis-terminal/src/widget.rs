@@ -134,7 +134,6 @@ pub fn take_privacy_mask_drawn() -> bool {
 #[derive(Default)]
 pub struct TerminalWidgetState {
     selecting: bool,
-    selection: Option<Selection>,
     /// True once this widget has been rendered focused, and never false
     /// again. Distinguishes a pane that LOST focus (whose highlight is
     /// dropped, see `on_event`) from a surface that is unfocused by
@@ -143,29 +142,23 @@ pub struct TerminalWidgetState {
     /// than terminal input, and without the latch its selection was
     /// swept before the drag that made it had ended.
     ever_focused: bool,
+    /// Whether the last event this widget saw was delivered while it held
+    /// focus, so losing it can be detected as a TRANSITION. The dismissal
+    /// below reads the emulator, and events are broadcast to every widget,
+    /// so testing "is not focused" per event would take the state lock on
+    /// every mouse move in every unfocused pane, contending with
+    /// `process()` on the output path for an answer that only changes
+    /// once.
+    was_focused: bool,
     /// X11 PRIMARY selection: the text of the last completed selection,
-    /// remembered independently of whether `selection` is still
-    /// highlighted. Set by selecting (not by any setting, and not by the
-    /// clipboard), so it outlives the highlight that clear-on-keypress
-    /// drops. Read by middle-click paste and the paste-selection action.
-    /// xterm exposes the same idea to users as the `keepSelection`
-    /// resource.
+    /// remembered independently of whether the band that produced it is
+    /// still on screen. Set by selecting (not by any setting, and not by
+    /// the clipboard), so it outlives both the highlight that
+    /// clear-on-keypress demotes and the range itself, which dies with
+    /// the text it marked. Read by middle-click paste and the
+    /// paste-selection action. xterm exposes the same idea to users as
+    /// the `keepSelection` resource.
     primary_selection: Option<String>,
-    /// Where `primary_selection` was captured: the selection range plus
-    /// the grid column count at capture. Drawn as a faint "ghost" band
-    /// once the live highlight is gone, illustrating what a PRIMARY
-    /// paste will insert; a new selection replaces it. The column count
-    /// guards a resize: reflow moves lines, so a stale range would band
-    /// unrelated cells. The line total guards grid ROTATION for the same
-    /// reason: our line coordinates are raw, so once output pushes the
-    /// screen (total_lines grows) the range points at different content.
-    /// Typing on the current line rotates nothing, so the
-    /// select-type-paste flow keeps its ghost. Never drawn in alt-screen
-    /// (the region belongs to the main grid, which the alt app is
-    /// covering). Drawn in BOTH clipboard modes: under `copy_on_select`
-    /// the last selection IS the clipboard, so the band stays an honest
-    /// cue for the paste gestures either way.
-    primary_ghost: Option<(Selection, u16, usize)>,
     /// Mirror of the grid's `display_offset` (lines above the live edge,
     /// 0 = bottom) as of the last write or the last draw. The grid is the
     /// authority: every scroll gesture goes through
@@ -255,14 +248,26 @@ pub struct TerminalWidgetState {
     /// window). Rolled here rather than via `iced`'s `mouse::Click` because
     /// that caps at triple and we need a fourth count for paragraph select.
     last_click: Option<(std::time::Instant, Point, u8)>,
-    /// `Some((granularity, anchor_cell))` while a double/triple-click
-    /// selection is active, so a drag extends by whole words/lines
-    /// instead of by cell. `None` for a plain single-click drag.
-    select_anchor: Option<(SelectGranularity, (u16, i32))>,
-    /// Last grid cell the word/line drag recomputed against. Throttles
-    /// the union recompute to one per cell crossing (the recompute locks
-    /// the mutex + runs two semantic searches; running it per pixel
-    /// would contend with the SSH echo path, see the URL-hover note).
+    /// `Some((granularity, anchor_at_end))` while a double/triple/quad
+    /// click selection is active, so a drag extends by whole words /
+    /// lines / paragraphs instead of by cell. `None` for a plain
+    /// single-click drag.
+    ///
+    /// The anchor is stored as WHICH END of the current range it is, not
+    /// as a cell. A cell would be a second coordinate in content space,
+    /// and it would need its own answer for every rotation, reflow and
+    /// alt-screen flip that the range already gets from alacritty. The
+    /// end is a bool, so it needs none: the range moves and the anchor
+    /// moves with it. Re-expanding a word / line / paragraph from a
+    /// boundary cell of its own group yields that group again, which is
+    /// what lets the drag keep unioning from a range instead of a point.
+    select_anchor: Option<(SelectGranularity, bool)>,
+    /// Last grid cell a drag resolved against. Throttles the selection
+    /// update to one per cell crossing: the pointer reports dozens of
+    /// moves a second, a cell spans many pixels, and the update takes the
+    /// state mutex (two semantic searches as well, on a word / line /
+    /// paragraph drag), which running per pixel would contend with the
+    /// SSH echo path for. See the URL-hover note.
     last_extend_cell: Option<(u16, i32)>,
     /// Time of the last edge auto-scroll step. Rate-limits the scroll so
     /// its speed is tied to wall-clock, not the (very high) mouse-move

@@ -1,8 +1,16 @@
-/// A selection range stored in **grid-line coordinates** (alacritty `Line`,
-/// signed: negative = scrollback, 0..screen_lines = live screen). Storing
-/// in line-space means the selection follows the content as the user
-/// scrolls, at draw time we translate line → visible row using the
-/// current scroll_offset.
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection as AlacSelection, SelectionType};
+
+/// A selection range in **grid-line coordinates** (alacritty `Line`,
+/// signed: negative = scrollback, 0..screen_lines = live screen), with
+/// both ends INCLUSIVE. The draw pass translates line → visible row
+/// against the current scroll offset.
+///
+/// This is a resolved READING of the selection, not where it is kept: the
+/// range itself lives in `Term::selection` (see the `TerminalState` impl
+/// below), which is what makes it follow its own text. Every value of
+/// this type comes from a `to_range` under the state lock, so it is
+/// already ordered and already clamped to the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     pub start: (u16, i32), // (col, line)
@@ -40,6 +48,10 @@ impl Selection {
         )
     }
 
+    /// Whether the range covers exactly one cell. That is what a press
+    /// with no drag leaves behind, so it is also the test for "this
+    /// gesture was a click": the privacy pin and the link hint both ask
+    /// it on release.
     pub fn is_empty(&self) -> bool {
         self.start == self.end
     }
@@ -61,6 +73,134 @@ impl Selection {
         // Click nearer the top-left end (a) -> anchor at b; else anchor at a.
         let anchor = if dist(a) <= dist(b) { b } else { a };
         Selection { start: anchor, end: click, block: false }
+    }
+}
+
+/// The selection lives in `Term::selection`, and this is the whole reason:
+/// alacritty moves and invalidates it AT THE SOURCE. `scroll_up_relative`
+/// rotates it before the grid rotates, `swap_alt` drops it, `resize` drops
+/// it on a column change and rotates it otherwise, and the erase handlers
+/// filter it out when the text under it is overwritten. None of that reads
+/// `history_size`, `total_lines` or `display_offset`, so a full scrollback
+/// (where all three stop moving while rows keep rotating) is not a case
+/// there at all. Observing the grid from outside once per frame and
+/// deducing what moved is the shape that needs a monotonic counter, a
+/// baseline to diff it against, and a rule per invalidation; hooking the
+/// mutation needs none of them.
+///
+/// The adapter is the only thing we owe. Our range is two INCLUSIVE cells;
+/// alacritty's is two half-cell anchors, so a write is
+/// `new(start, Left)` + `update(end, Right)` + `include_all()`, whose last
+/// step fixes the sides for a backwards drag, and a read is `to_range`,
+/// which resolves the sides back to inclusive cells. `to_range` also
+/// answers `None` once the range has rotated below the oldest line the
+/// grid still holds, which is why it is the single predicate for "is
+/// there a selection": `term.selection.is_some()` stays true there and
+/// would band nothing.
+impl crate::widget::TerminalState {
+    /// The live range in our own coordinates, or `None` when there is no
+    /// selection or it has rotated out of the buffer entirely.
+    pub fn selection_range(&self) -> Option<Selection> {
+        let term = &self.backend.term;
+        let range = term.selection.as_ref()?.to_range(term)?;
+        Some(Selection {
+            start: (range.start.column.0 as u16, range.start.line.0),
+            end: (range.end.column.0 as u16, range.end.line.0),
+            block: range.is_block,
+        })
+    }
+
+    /// The range only while it is a LIVE highlight, skipping a demoted
+    /// one. What the copy gestures and the strong band read.
+    pub fn live_selection(&self) -> Option<Selection> {
+        (!self.selection.demoted).then(|| self.selection_range()).flatten()
+    }
+
+    /// The range only while it is the faint PRIMARY ghost.
+    pub fn ghost_selection(&self) -> Option<Selection> {
+        self.selection.demoted.then(|| self.selection_range()).flatten()
+    }
+
+    /// Begin a selection at `cell`, live. `block` starts the rectangular
+    /// (Alt+drag) kind, which alacritty tracks as its own selection type
+    /// so the rotation and the range resolution both stay correct.
+    pub fn start_selection(&mut self, cell: (u16, i32), block: bool) {
+        self.write_selection(cell, cell, block);
+    }
+
+    /// Move the free end of the live selection to `cell`, keeping the
+    /// anchor alacritty is holding. The anchor never leaves the emulator,
+    /// so a rotation between two motion events moves both ends together.
+    pub fn update_selection(&mut self, cell: (u16, i32)) {
+        let point = Self::selection_point(&self.backend.term, cell);
+        let Some(sel) = self.backend.term.selection.as_mut() else { return };
+        sel.update(point, Side::Right);
+        sel.include_all();
+        self.selection.demoted = false;
+    }
+
+    /// Replace the range outright, live. For the selections we compute
+    /// ourselves (word / line / paragraph expansion, the smart-select of a
+    /// URL, right-click extend, select-all), where the two ends are known
+    /// up front.
+    pub fn set_selection(&mut self, sel: Selection) {
+        self.write_selection(sel.start, sel.end, sel.block);
+    }
+
+    /// Drop the selection: nothing banded, no ghost left behind.
+    pub fn clear_selection(&mut self) {
+        self.backend.term.selection = None;
+        self.selection.demoted = false;
+        self.selection.alt_stash = None;
+    }
+
+    /// Demote the live band to the faint PRIMARY ghost. The range is
+    /// untouched, so it keeps rotating and dying with its own text; only
+    /// how it is drawn changes.
+    pub fn demote_selection(&mut self) {
+        if self.backend.term.selection.is_some() {
+            self.selection.demoted = true;
+        }
+    }
+
+    /// Whether an alternate-screen app is up. The alt grid is a different
+    /// buffer, so a range made against the main one is neither drawn nor
+    /// extended while it is.
+    pub fn in_alt_screen(&self) -> bool {
+        self.backend
+            .term
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::ALT_SCREEN)
+    }
+
+    fn write_selection(&mut self, start: (u16, i32), end: (u16, i32), block: bool) {
+        let ty = if block { SelectionType::Block } else { SelectionType::Simple };
+        let term = &mut self.backend.term;
+        let mut sel =
+            AlacSelection::new(ty, Self::selection_point(term, start), Side::Left);
+        sel.update(Self::selection_point(term, end), Side::Right);
+        // Both ends inclusive whichever way the drag runs: `include_all`
+        // reads the two points' order and sets the sides to match, and on
+        // a single cell it yields Left..Right, which resolves back to that
+        // one cell rather than to nothing.
+        sel.include_all();
+        term.selection = Some(sel);
+        self.selection.demoted = false;
+    }
+
+    /// A cell as an alacritty point, with the column clamped into the
+    /// grid: `pixel_to_cell` floors the column low but not high, so a drag
+    /// into the right padding reports one past the last column, and the
+    /// range resolution would carry it into a row index. The LINE is left
+    /// alone, since a range legitimately points outside the grid once
+    /// rotation has carried it off the top.
+    fn selection_point(
+        term: &alacritty_terminal::Term<crate::backend::EventProxy>,
+        cell: (u16, i32),
+    ) -> Point {
+        use alacritty_terminal::grid::Dimensions;
+        let last_col = term.grid().columns().saturating_sub(1);
+        Point::new(Line(cell.1), Column((cell.0 as usize).min(last_col)))
     }
 }
 

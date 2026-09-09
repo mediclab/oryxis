@@ -53,6 +53,29 @@ pub struct TerminalState {
     /// back to the iced runtime so the over-the-spot overlay can draw it at
     /// the caret. Empty string means "no active composition".
     preedit: String,
+    /// Everything about the text selection that is NOT the range itself.
+    /// The range lives in `backend.term.selection`, because alacritty is
+    /// what moves and invalidates it (see [`crate::widget::Selection`]);
+    /// this carries the two facts the emulator has no opinion about.
+    pub(crate) selection: SelectionStore,
+}
+
+/// The selection facts that are ours rather than the emulator's.
+#[derive(Default)]
+pub(crate) struct SelectionStore {
+    /// Whether the range in `term.selection` is the faint PRIMARY "ghost"
+    /// (a completed selection, demoted) rather than a live highlight. One
+    /// range serves both: they mark the same cells, differ only in how
+    /// they are drawn, and a demoted range has to rotate and die exactly
+    /// like a live one.
+    pub demoted: bool,
+    /// The ghost parked while an alternate-screen app is up. `swap_alt`
+    /// nulls `term.selection` on both flips, which is right for a live
+    /// band (alacritty and kitty both drop it there) and wrong for the
+    /// ghost: the ghost remembers a selection in the MAIN grid, which the
+    /// alt app only covers, so it is still on its own text when the app
+    /// quits. VTE keeps a selection across the flip for the same reason.
+    pub alt_stash: Option<alacritty_terminal::selection::Selection>,
 }
 
 impl TerminalState {
@@ -78,7 +101,7 @@ impl TerminalState {
         let (pty, rx) =
             PtyHandle::spawn_command(cols, rows, None, &[], cwd, env, &backend.event_proxy)?;
         let palette = TerminalPalette::default();
-        Ok((Self { backend, pty: Some(pty), palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new() }, rx))
+        Ok((Self { backend, pty: Some(pty), palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new(), selection: SelectionStore::default() }, rx))
     }
 
     /// Like `new` but spawns an explicit program (e.g. PowerShell or
@@ -111,7 +134,7 @@ impl TerminalState {
             cols, rows, Some(program), args, cwd, env, &backend.event_proxy,
         )?;
         let palette = TerminalPalette::default();
-        Ok((Self { backend, pty: Some(pty), palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new() }, rx))
+        Ok((Self { backend, pty: Some(pty), palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new(), selection: SelectionStore::default() }, rx))
     }
 
     /// Spawn a new shell INTO this state, keeping its grid and scrollback:
@@ -144,7 +167,7 @@ impl TerminalState {
     ) -> TerminalResult<Self> {
         let backend = TerminalBackend::new(cols, rows);
         let palette = TerminalPalette::default();
-        Ok(Self { backend, pty: None, palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new() })
+        Ok(Self { backend, pty: None, palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new(), selection: SelectionStore::default() })
     }
 
     /// A PTY-less state with an explicit scrollback budget, for the
@@ -158,7 +181,7 @@ impl TerminalState {
     ) -> TerminalResult<Self> {
         let backend = TerminalBackend::new_with_scrollback(cols, rows, scrollback);
         let palette = TerminalPalette::default();
-        Ok(Self { backend, pty: None, palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new() })
+        Ok(Self { backend, pty: None, palette, remote_resize_tx: None, render_epoch: 0, search: None, pending_scroll: std::cell::Cell::new(None), hovered_link: None, preedit: String::new(), selection: SelectionStore::default() })
     }
 
     /// Wire a remote resize sender, called from the app once an SSH
@@ -187,7 +210,30 @@ impl TerminalState {
     }
 
     pub fn process(&mut self, bytes: &[u8]) {
+        // The alternate screen is a grid of its own, so alacritty's
+        // `swap_alt` nulls the selection on both flips. That is the right
+        // answer for a live band and the wrong one for the ghost, which
+        // marks text in the MAIN grid that the alt app is merely covering.
+        // The flip happens inside `advance`, so the range cannot be
+        // rescued as it goes: snapshot it first and put it back after.
+        // A batch that rotated rows BEFORE its `\e[?1049h` stashes a range
+        // one rotation stale, which is bounded and rare (an alt app sends
+        // the switch among its first bytes) and not worth splitting
+        // batches on escape boundaries to avoid. A batch that enters AND
+        // leaves in one go (a pager that quits on the read that started
+        // it) sees neither edge and loses the ghost, on the same terms.
+        let was_alt = self.in_alt_screen();
+        let carried = self.selection.demoted.then(|| self.backend.term.selection.clone());
         self.backend.process(bytes);
+        let is_alt = self.in_alt_screen();
+        if is_alt && !was_alt {
+            self.selection.alt_stash = carried.flatten();
+        } else if was_alt && !is_alt && let Some(ghost) = self.selection.alt_stash.take() {
+            // The main grid was untouched under the alt app, so the range
+            // still names its own text. It comes back demoted, never live.
+            self.backend.term.selection = Some(ghost);
+            self.selection.demoted = true;
+        }
         // A batch reached the emulator: even a pure cursor move or a
         // query-only sequence can change what a frame would draw, so bump
         // unconditionally. The cost of an occasional needless rebuild is

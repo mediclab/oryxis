@@ -38,7 +38,7 @@ where
         // geometry; on a miss we clear the cache so `Cache::draw` below
         // re-runs the closure. The perf HUD and the visual-bell flash are
         // NOT part of the key: both are drawn as their own fresh top layers.
-        let (content_epoch, search_generation) = {
+        let (content_epoch, search_generation, selection, ghost) = {
             let mut s = match self.state.lock() {
                 Ok(s) => s,
                 Err(p) => p.into_inner(),
@@ -78,21 +78,23 @@ where
             }
             // Draw is `&self`, hence the `Cell`s.
             widget_state.scroll_offset.set(s.viewport_offset());
-            (content_epoch, s.search_generation())
+            // Read the band under this lock, the same one the paint pass
+            // takes, and hide the ghost on the same terms it does: a key
+            // built from anything else describes a frame that is not the
+            // one drawn, which either caches the wrong picture or misses
+            // on every frame.
+            let ghost = (!s.in_alt_screen()).then(|| s.ghost_selection()).flatten();
+            (content_epoch, s.search_generation(), s.live_selection(), ghost)
         };
         widget_state.last_draw_epoch.set(Some(content_epoch));
         let render_key = RenderKey {
             epoch: content_epoch,
             scroll_offset: widget_state.scroll_offset.get(),
-            selection: widget_state.selection,
+            selection,
             // Unfocused panes hide the ghost (see the draw site below), so
             // the cache key has to agree or a pane keeps the cached image
             // that still has the band in it.
-            ghost: if widget_state.selection.is_none() && self.focused {
-                widget_state.primary_ghost.map(|(s, ..)| s)
-            } else {
-                None
-            },
+            ghost: if self.focused { ghost } else { None },
             hovered_url_cell: widget_state.hovered_url.as_ref().map(|(_, pos)| {
                 (
                     ((pos.x - TERM_PAD) / cell_w).max(0.0) as u16,
@@ -210,7 +212,6 @@ where
         let lock_dur;
         let cells_dur;
         let built = true;
-        let selection = &widget_state.selection;
 
         let mut cells: Vec<CellData> = DRAW_CELLS.take();
         cells.clear();
@@ -235,6 +236,7 @@ where
             total_lines,
             in_alt_screen,
             scroll_offset,
+            selection,
             ghost,
             preedit,
             cols_count,
@@ -274,10 +276,15 @@ where
 
             // Faint PRIMARY ghost: the demoted rectangle of the
             // last selection, shown only when no live highlight is
-            // up. Suppressed in alt-screen (the region belongs to
-            // the main grid the alt app is covering) and after a
-            // resize or a rotation (both move the lines the range
-            // points at). NOT gated on copy_on_select: the band
+            // up, which needs no test here because it is the SAME
+            // range as the live band and `demoted` is what tells the
+            // two apart. Suppressed in alt-screen: the range belongs
+            // to the main grid the alt app is covering, and it is
+            // parked rather than dropped for the trip back
+            // (`SelectionStore::alt_stash`). Nothing guards a resize
+            // or a rotation any more: alacritty moves the range with
+            // its text and drops it when a reflow or an erase takes
+            // that text away. NOT gated on copy_on_select: the band
             // means "what you last selected", which under that
             // setting is what the clipboard holds, so it stays an
             // honest cue for the paste gestures in both modes
@@ -290,21 +297,15 @@ where
             // and reads like three live selections. The PRIMARY text
             // itself is untouched: middle-click paste still hands
             // back whichever pane you last selected in.
-            let ghost: Option<Selection> = if selection.is_none()
-                && !in_alt_screen
-                && self.focused
-            {
-                widget_state
-                    .primary_ghost
-                    .filter(|(_, cols, total)| {
-                        let grid = state.backend.term.grid();
-                        *cols as usize == grid.columns()
-                            && *total == grid.total_lines()
-                    })
-                    .map(|(s, ..)| s)
-            } else {
-                None
-            };
+            let showing = !in_alt_screen && self.focused;
+            let ghost: Option<Selection> =
+                showing.then(|| state.ghost_selection()).flatten();
+            // The live band needs no alt-screen test of its own: a band
+            // made against the main grid is already gone by now, because
+            // `swap_alt` clears the range on the flip, as alacritty's and
+            // kitty's own terminals do. One made INSIDE the alt app is
+            // that grid's own and is drawn there, as it always was.
+            let selection: Option<Selection> = state.live_selection();
 
             let term = &state.backend.term;
             let palette = &state.palette;
@@ -450,6 +451,7 @@ where
                 total_lines,
                 in_alt_screen,
                 scroll_offset,
+                selection,
                 ghost,
                 state.preedit().to_string(),
                 cols_count,

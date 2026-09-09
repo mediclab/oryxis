@@ -461,12 +461,12 @@ where
             return None;
         }
 
-        // A pane that no longer has focus drops its highlight. The
-        // selection lives in this widget's own tree state, so nothing
-        // outside can reach it, and without this every pane you ever
-        // selected in keeps its block lit: split a tab three ways and you
-        // are looking at three highlights with no way to tell which one
-        // the next copy would take (field report).
+        // A pane that no longer has focus drops its highlight. Each pane
+        // has a terminal state of its own, so each carries a band of its
+        // own, and without this every pane you ever selected in keeps its
+        // block lit: split a tab three ways and you are looking at three
+        // highlights with no way to tell which one the next copy would
+        // take (field report).
         //
         // Only the HIGHLIGHT goes. `primary_selection` is deliberately
         // kept, so middle-click paste and the paste-selection action
@@ -479,13 +479,29 @@ where
         // Gated on `ever_focused` so this reads as "lost focus" rather
         // than "is not focused": a display-only surface that never takes
         // focus keeps its selection (see the latch above).
-        if !self.focused
-            && widget_state.ever_focused
-            && (widget_state.selection.is_some() || widget_state.selecting)
-        {
-            widget_state.selection = None;
-            widget_state.selecting = false;
-            return Some(CanvasAction::request_redraw());
+        let focus_lost = widget_state.was_focused && !self.focused;
+        widget_state.was_focused = self.focused;
+        if focus_lost && widget_state.ever_focused {
+            // An interrupted drag never completed, so there is nothing to
+            // remember; a finished band is demoted instead, which is what
+            // keeps "what you last selected here" true for the pane you
+            // come back to. Either way the strong highlight goes.
+            let acted = match self.state.lock() {
+                Ok(mut state) if widget_state.selecting => {
+                    state.clear_selection();
+                    true
+                }
+                Ok(mut state) if state.live_selection().is_some() => {
+                    state.demote_selection();
+                    true
+                }
+                _ => false,
+            };
+            if acted {
+                widget_state.selecting = false;
+                widget_state.select_anchor = None;
+                return Some(CanvasAction::request_redraw());
+            }
         }
 
         // A left press on the perf HUD toggles its compact <-> full-name
@@ -710,14 +726,24 @@ where
                                 | keyboard::key::Named::Hyper
                                 | keyboard::key::Named::Meta
                         )
-                    )
-                    && (widget_state.selection.is_some()
-                        || widget_state.select_anchor.is_some()) =>
+                    ) =>
             {
-                widget_state.selection = None;
-                widget_state.select_anchor = None;
-                widget_state.selecting = false;
-                return Some(CanvasAction::request_redraw());
+                // Demoted, not dropped: the PRIMARY text and the faint
+                // band that illustrates it are what make
+                // select-type-paste work, and the keystroke is exactly
+                // the `type` in the middle of it.
+                let dropped = match self.state.lock() {
+                    Ok(mut state) if state.live_selection().is_some() => {
+                        state.demote_selection();
+                        true
+                    }
+                    _ => false,
+                };
+                if dropped || widget_state.select_anchor.is_some() {
+                    widget_state.select_anchor = None;
+                    widget_state.selecting = false;
+                    return Some(CanvasAction::request_redraw());
+                }
             }
             _ => {}
         }
@@ -834,16 +860,11 @@ where
                         // Capture the live selection's text now, so the
                         // app-rendered "Copy" row can offer it (the
                         // selection state is unreachable from the app).
-                        let sel_text = widget_state
-                            .selection
-                            .as_ref()
-                            .filter(|s| !s.is_empty())
-                            .and_then(|sel| {
-                                self.state.lock().ok().and_then(|state| {
-                                    let t = state.get_selection_text(sel);
-                                    (!t.is_empty()).then_some(t)
-                                })
-                            });
+                        let sel_text = self.state.lock().ok().and_then(|state| {
+                            let sel = state.live_selection().filter(|s| !s.is_empty())?;
+                            let t = state.get_selection_text(&sel);
+                            (!t.is_empty()).then_some(t)
+                        });
                         return Some(
                             CanvasAction::publish(cb(abs.x, abs.y, sel_text)).and_capture(),
                         );
@@ -855,20 +876,22 @@ where
                     // to the click point, keeping the far anchor fixed,
                     // then copy. A no-op when there is nothing to extend
                     // (or when the live selection is a block).
-                    if let Some(pos) = cursor.position_in(bounds) {
+                    if let Some(pos) = cursor.position_in(bounds)
+                        && let Ok(mut state) = self.state.lock()
+                    {
                         let (col, vrow) = self.pixel_to_cell(pos);
-                        let line =
-                            Self::visible_row_to_line(vrow, widget_state.scroll_offset.get());
-                        if let Some(sel) = widget_state.selection.as_ref().filter(|s| !s.block)
-                        {
+                        // The lock is in hand, so the click resolves
+                        // against the grid's own offset rather than the
+                        // mirror, which output landing since the last
+                        // frame would have left behind.
+                        let line = Self::visible_row_to_line(vrow, state.viewport_offset());
+                        if let Some(sel) = state.live_selection().filter(|s| !s.block) {
                             let extended = sel.extended_to((col, line));
-                            widget_state.selection = Some(extended);
-                            if let Ok(state) = self.state.lock() {
-                                let text = state.get_selection_text(&extended);
-                                drop(state);
-                                if !text.is_empty() {
-                                    set_clipboard_text(&text);
-                                }
+                            state.set_selection(extended);
+                            let text = state.get_selection_text(&extended);
+                            drop(state);
+                            if !text.is_empty() {
+                                set_clipboard_text(&text);
                             }
                             return Some(CanvasAction::request_redraw().and_capture());
                         }
@@ -884,17 +907,18 @@ where
                     // `on_paste_request` (the paste hook).
                     if self.copy_on_select
                         && self.right_click_copy
-                        && let Some(sel) = widget_state.selection
-                        && !sel.is_empty()
+                        && let Ok(mut state) = self.state.lock()
+                        && let Some(sel) = state.live_selection().filter(|s| !s.is_empty())
                     {
-                        if let Ok(state) = self.state.lock() {
-                            let text = state.get_selection_text(&sel);
-                            drop(state);
-                            if !text.is_empty() {
-                                set_clipboard_text(&text);
-                            }
+                        let text = state.get_selection_text(&sel);
+                        // The copy consumes the live band and leaves the
+                        // ghost, so the next right-click pastes and the
+                        // pane still shows what the clipboard holds.
+                        state.demote_selection();
+                        drop(state);
+                        if !text.is_empty() {
+                            set_clipboard_text(&text);
                         }
-                        widget_state.selection = None;
                         return Some(CanvasAction::request_redraw().and_capture());
                     }
                     if let Some(msg) = self.on_paste_request.clone() {
@@ -941,22 +965,29 @@ where
             // selection below and the optional auto-copy. Degenerate
             // selections that never moved (a single click) don't count,
             // but a double/triple-click one does even when it lands on a
-            // one-character word. The grid width rides along for the
-            // ghost's resize guard.
-            let finished = if was_selecting
-                && let Some(sel) = widget_state.selection
-                && (!sel.is_empty() || was_semantic)
-                && let Ok(state) = self.state.lock()
-            {
-                use alacritty_terminal::grid::Dimensions;
-                let grid = state.backend.term.grid();
-                let cols = grid.columns() as u16;
-                let total = grid.total_lines();
-                let text = state.get_selection_text(&sel);
-                drop(state);
-                (!text.is_empty()).then_some((text, sel, cols, total))
-            } else {
-                None
+            // one-character word.
+            //
+            // `degenerate` rides along from the same lock: a band that
+            // never left its starting cell is what makes the gesture a
+            // plain click, which the privacy pin and the link hint below
+            // both ask about.
+            //
+            // The band stays LIVE here. It is demoted only when something
+            // dismisses it (a keystroke, the focus leaving, a
+            // paste-selection), and because the ghost is that same range
+            // rather than a copy of it, it goes on rotating with its own
+            // text and dies when that text does, with no capture-time
+            // guard to go stale.
+            let (finished, degenerate) = match self.state.lock() {
+                Ok(state) if was_selecting => {
+                    let sel = state.live_selection();
+                    let text = sel
+                        .filter(|s| !s.is_empty() || was_semantic)
+                        .map(|s| state.get_selection_text(&s))
+                        .filter(|t| !t.is_empty());
+                    (text, sel.is_some_and(|s| s.is_empty()))
+                }
+                _ => (None, false),
             };
             // X11 PRIMARY selection: selecting text IS the act that sets
             // it, so this is not gated on any setting, and it survives
@@ -969,9 +1000,8 @@ where
             // alongside the text: once the live highlight is gone the
             // draw pass shows it as a faint ghost band, illustrating
             // what a PRIMARY paste will insert.
-            if let Some((ref text, sel, cols, total)) = finished {
+            if let Some(ref text) = finished {
                 widget_state.primary_selection = Some(text.clone());
-                widget_state.primary_ghost = Some((sel, cols, total));
                 // Where the platform has a real PRIMARY selection, hand it
                 // the same text: selecting here then middle-clicking in any
                 // other window is what a Linux user expects, and it is the
@@ -983,7 +1013,7 @@ where
             // is on the copy is deferred to a right-click instead, so
             // skip it here; the deferral is Paste-scheme-only (see
             // `defers_copy_to_right_click`).
-            if let Some((ref text, ..)) = finished
+            if let Some(ref text) = finished
                 && self.copy_on_select
                 && !self.defers_copy_to_right_click()
             {
@@ -1000,7 +1030,7 @@ where
             if self.privacy
                 && was_selecting
                 && !was_semantic
-                && widget_state.selection.as_ref().is_some_and(|s| s.is_empty())
+                && degenerate
                 && let Some(pos) = cursor.position_in(bounds)
             {
                 let (col, vrow) = self.pixel_to_cell(pos);
@@ -1032,7 +1062,7 @@ where
             if !widget_state.modifiers.control()
                 && was_selecting
                 && !was_semantic
-                && widget_state.selection.as_ref().is_some_and(|s| s.is_empty())
+                && degenerate
                 && let Some(cb) = &self.on_link_click_hint
                 && let Some(pos) = cursor.position_in(bounds)
             {
@@ -1158,30 +1188,56 @@ where
                         rel.y.clamp(0.0, bounds.height),
                     );
                     let (col, vrow) = self.pixel_to_cell(clamped);
-                    let line = Self::visible_row_to_line(vrow, widget_state.scroll_offset.get());
-                    if let Some((gran, anchor)) = widget_state.select_anchor {
-                        // Word/line drag: extend by unioning the anchor's
-                        // word/line with the cursor's. Throttle to one
-                        // recompute per cell crossing, it locks the mutex
-                        // and runs two semantic searches, which must not
-                        // happen per pixel (same reasoning as the URL
-                        // hover throttle below).
+                    // Throttled to one update per cell crossing: the
+                    // pointer reports dozens of moves per second and a
+                    // cell spans many pixels, so anything finer just
+                    // contends with `state.process` on the output path
+                    // (the same reasoning as the URL hover throttle
+                    // below). The semantic path additionally runs two
+                    // grid searches per recompute.
+                    if let Ok(mut state) = self.state.lock() {
+                        // The lock is in hand, so the pointer resolves
+                        // against the grid's own offset. The mirror lags
+                        // it by whatever output landed since the last
+                        // frame, which is exactly the window a drag under
+                        // running output sits in.
+                        let line = Self::visible_row_to_line(vrow, state.viewport_offset());
                         if widget_state.last_extend_cell != Some((col, line)) {
                             widget_state.last_extend_cell = Some((col, line));
-                            if let Ok(mut state) = self.state.lock() {
-                                let head = self.semantic_selection(
-                                    &mut state.backend, anchor, gran,
-                                );
-                                let tail = self.semantic_selection(
-                                    &mut state.backend, (col, line), gran,
-                                );
-                                drop(state);
-                                widget_state.selection =
-                                    Some(union_selection(head, tail));
+                            match widget_state.select_anchor {
+                                Some((gran, anchor_at_end)) => {
+                                    // Word / line / paragraph drag: union
+                                    // the anchor's group with the
+                                    // cursor's. The anchor is read back
+                                    // off the range as whichever end it
+                                    // is, so the rotation the range
+                                    // already followed carries it too.
+                                    let Some(range) = state.selection_range() else {
+                                        return Some(
+                                            CanvasAction::request_redraw().and_capture(),
+                                        );
+                                    };
+                                    let (lo, hi) = range.ordered();
+                                    let anchor = if anchor_at_end { hi } else { lo };
+                                    let head =
+                                        self.semantic_selection(&mut state.backend, anchor, gran);
+                                    let tail = self.semantic_selection(
+                                        &mut state.backend,
+                                        (col, line),
+                                        gran,
+                                    );
+                                    // Which end the anchor lands on flips
+                                    // when the cursor crosses it, and the
+                                    // union is what decides: the anchor's
+                                    // group is the far one from the
+                                    // cursor.
+                                    let cursor_before = (line, col) < (anchor.1, anchor.0);
+                                    widget_state.select_anchor = Some((gran, cursor_before));
+                                    state.set_selection(union_selection(head, tail));
+                                }
+                                None => state.update_selection((col, line)),
                             }
                         }
-                    } else if let Some(ref mut sel) = widget_state.selection {
-                        sel.end = (col, line);
                     }
                     return Some(CanvasAction::request_redraw().and_capture());
                 }
@@ -1401,16 +1457,16 @@ where
                 // a quick shift+click can't be misread as a double-click
                 // word grab. Block-ness carries over.
                 if widget_state.modifiers.shift()
-                    && let Some(prev) = widget_state.selection
+                    && let Ok(mut state) = self.state.lock()
+                    && state.selection_range().is_some()
                 {
+                    // The press anchor alacritty is holding stays put and
+                    // this click becomes the free end, which is what
+                    // `update` does. Block-ness carries over with it.
                     widget_state.select_anchor = None;
                     widget_state.selecting = true;
                     widget_state.last_extend_cell = Some((col, line));
-                    widget_state.selection = Some(Selection {
-                        start: prev.start,
-                        end: (col, line),
-                        block: prev.block,
-                    });
+                    state.update_selection((col, line));
                     return Some(CanvasAction::request_redraw().and_capture());
                 }
                 // Classify the press as single / double / triple / quad
@@ -1431,66 +1487,59 @@ where
                 widget_state.last_click = Some((now, pos, count));
                 widget_state.selecting = true;
                 widget_state.last_extend_cell = Some((col, line));
+                let Ok(mut state) = self.state.lock() else {
+                    return Some(CanvasAction::request_redraw().and_capture());
+                };
+                // A fresh selection replaces whatever the range held,
+                // ghost included: the pane's answer to "what you last
+                // selected" is this one now.
                 match count {
                     1 => {
                         widget_state.select_anchor = None;
                         // Alt+drag starts a rectangular (column) selection.
-                        widget_state.selection = Some(Selection {
-                            start: (col, line),
-                            end: (col, line),
-                            block: widget_state.modifiers.alt(),
-                        });
+                        state.start_selection((col, line), widget_state.modifiers.alt());
                     }
                     2 => {
-                        if let Ok(mut state) = self.state.lock() {
-                            // Smart-select: a double-click inside a URL /
-                            // IP / path grabs the whole token instead of
-                            // the delimiter word. Falls back to word.
-                            if let Some((c0, c1)) = smart_span_at(
-                                &state.backend.term,
-                                &state.palette,
-                                line,
-                                col,
-                            ) {
-                                widget_state.select_anchor = None;
-                                widget_state.selection = Some(Selection {
-                                    start: (c0, line),
-                                    end: (c1, line),
-                                    block: false,
-                                });
-                            } else {
-                                widget_state.select_anchor =
-                                    Some((SelectGranularity::Word, (col, line)));
-                                widget_state.selection = Some(self.semantic_selection(
-                                    &mut state.backend,
-                                    (col, line),
-                                    SelectGranularity::Word,
-                                ));
-                            }
+                        // Smart-select: a double-click inside a URL / IP /
+                        // path grabs the whole token instead of the
+                        // delimiter word. Falls back to word.
+                        if let Some((c0, c1)) =
+                            smart_span_at(&state.backend.term, &state.palette, line, col)
+                        {
+                            widget_state.select_anchor = None;
+                            state.set_selection(Selection {
+                                start: (c0, line),
+                                end: (c1, line),
+                                block: false,
+                            });
+                        } else {
+                            widget_state.select_anchor = Some((SelectGranularity::Word, false));
+                            let sel = self.semantic_selection(
+                                &mut state.backend,
+                                (col, line),
+                                SelectGranularity::Word,
+                            );
+                            state.set_selection(sel);
                         }
                     }
                     3 => {
-                        widget_state.select_anchor =
-                            Some((SelectGranularity::Line, (col, line)));
-                        if let Ok(mut state) = self.state.lock() {
-                            widget_state.selection = Some(self.semantic_selection(
-                                &mut state.backend,
-                                (col, line),
-                                SelectGranularity::Line,
-                            ));
-                        }
+                        widget_state.select_anchor = Some((SelectGranularity::Line, false));
+                        let sel = self.semantic_selection(
+                            &mut state.backend,
+                            (col, line),
+                            SelectGranularity::Line,
+                        );
+                        state.set_selection(sel);
                     }
                     // 4 (and the cycle restarts after): paragraph.
                     _ => {
-                        widget_state.select_anchor =
-                            Some((SelectGranularity::Paragraph, (col, line)));
-                        if let Ok(mut state) = self.state.lock() {
-                            widget_state.selection = Some(self.semantic_selection(
-                                &mut state.backend,
-                                (col, line),
-                                SelectGranularity::Paragraph,
-                            ));
-                        }
+                        widget_state.select_anchor = Some((SelectGranularity::Paragraph, false));
+                        let sel = self.semantic_selection(
+                            &mut state.backend,
+                            (col, line),
+                            SelectGranularity::Paragraph,
+                        );
+                        state.set_selection(sel);
                     }
                 }
                 return Some(CanvasAction::request_redraw().and_capture());
@@ -1508,11 +1557,10 @@ where
     ) -> Option<CanvasAction<Message>> {
         match action {
             TerminalChordAction::Copy => {
-                if let Some(ref sel) = widget_state.selection
-                    && !sel.is_empty()
-                    && let Ok(state) = self.state.lock()
+                if let Ok(state) = self.state.lock()
+                    && let Some(sel) = state.live_selection().filter(|s| !s.is_empty())
                 {
-                    let text = state.get_selection_text(sel);
+                    let text = state.get_selection_text(&sel);
                     if !text.is_empty() {
                         set_clipboard_text(&text);
                     }
@@ -1538,8 +1586,11 @@ where
             // owned the chord.
             TerminalChordAction::PasteSelection => {
                 // Same demote as middle-click: pasting consumes
-                // the live highlight, the ghost carries on.
-                widget_state.selection = None;
+                // the live highlight, the ghost carries on. It is the
+                // same range either way, so nothing is copied anywhere.
+                if let Ok(mut state) = self.state.lock() {
+                    state.demote_selection();
+                }
                 widget_state.select_anchor = None;
                 widget_state.selecting = false;
                 // Where the platform owns a PRIMARY selection the host
@@ -1575,13 +1626,13 @@ where
             // stays a separate gesture (the copy chord, or
             // copy-on-select on the next release).
             TerminalChordAction::SelectAll => {
-                if let Ok(state) = self.state.lock() {
+                if let Ok(mut state) = self.state.lock() {
                     use alacritty_terminal::grid::Dimensions;
                     let grid = state.backend.term.grid();
                     let top = grid.topmost_line().0;
                     let bot = grid.bottommost_line().0;
                     let last_col = grid.columns().saturating_sub(1) as u16;
-                    widget_state.selection = Some(Selection {
+                    state.set_selection(Selection {
                         start: (0, top),
                         end: (last_col, bot),
                         block: false,
