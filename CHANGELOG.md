@@ -17,7 +17,7 @@ Offline mode: Oryxis can be told to make no request of its own, and an offline b
 - An SSH key syncs with its private half, so it can authenticate on the device that received it (#221, by @mediclab).
 - A key that synced before that is offered again once, from the device holding the private material.
 - P2P sync survives a restart: an automatic listen port is kept, and a peer seen on the local network has its address written down (#219, reported by @mediclab).
-- Touch ID unlock can be turned on at last, on the build we ship (#222, diagnosed by @mediclab).
+- Touch ID unlock can be turned on at last, on the build we ship (#222, diagnosed by @mediclab). An app update asks for the login password once on the next unlock, because the signature is the code identity the Keychain keyed its ACL on.
 - The terminal selection moves with its text instead of staying glued to screen rows while output scrolls (#220, diagnosed by @shideqin).
 - Chinese renders from the downloaded font on macOS 15 and later, instead of one face per character (#189).
 - A vault with a master password honours the download mirror at boot, and heals the terminal font it actually has configured.
