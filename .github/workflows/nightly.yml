@@ -1,7 +1,9 @@
 name: Nightly
 
 # Rolling per-commit build of just the main `oryxis` app (no plugins,
-# no installers). Each successful run replaces the `nightly-latest`
+# and no Windows or Linux installers; macOS gets a .dmg because the
+# bundle is what gives the app its code identity, see the job below).
+# Each successful run replaces the `nightly-latest`
 # GitHub Release so the link to the latest unstable binary never moves.
 #
 # The rolling tag was `nightly` until 2026-07-16: a release published
@@ -170,12 +172,56 @@ jobs:
           cp resources/INSTALL-macOS.md dist/
           cd dist && tar czf ../oryxis-nightly-macos-aarch64.tar.gz *
           cd .. && cp target/release/oryxis oryxis-nightly-macos-aarch64.bin
+      # The nightly ships a .dmg even though it ships no other installer,
+      # because on macOS the bundle is not packaging, it is the program.
+      # A bare binary runs as a CLI process with a different CODE
+      # IDENTITY, and the Keychain ACL is keyed on exactly that, so
+      # Touch ID unlock and anything else identity-scoped behaves
+      # differently from the app people actually install. Testing a
+      # nightly on a Mac was therefore testing something else.
+      - name: Build .app bundle
+        run: |
+          set -euo pipefail
+          # The crate version, not a tag: a nightly has no tag, and
+          # CFBundleShortVersionString must stay a plain x.y.z. The
+          # commit it was built from is in the release notes.
+          VERSION=$(grep -m1 '^version' crates/oryxis-app/Cargo.toml | cut -d'"' -f2)
+          APP="Oryxis.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/release/oryxis "$APP/Contents/MacOS/oryxis"
+          cp resources/Oryxis.icns "$APP/Contents/Resources/Oryxis.icns"
+          sed "s/__VERSION__/${VERSION}/g" resources/Info.plist > "$APP/Contents/Info.plist"
+          # Ad-hoc only, never the Developer ID path the release job
+          # takes: notarization is a round trip to Apple per submission,
+          # and this workflow runs on every push to main.
+          codesign --force --deep --sign - "$APP"
+      - name: Build .dmg
+        run: |
+          set -euo pipefail
+          STAGING="$RUNNER_TEMP/dmg"
+          mkdir -p "$STAGING"
+          mv Oryxis.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          cp resources/INSTALL-macOS.md "$STAGING/"
+          # Sized from the measured content plus headroom, never left to
+          # hdiutil's own estimate: see the same step in release.yml and
+          # the `create failed - No space left on device` note in the
+          # release skill's gotchas. `target/` is deliberately NOT
+          # reclaimed here the way the release job reclaims it, because
+          # this workflow caches that directory and emptying it would
+          # poison the cache for every later run.
+          df -h /
+          SIZE_MB=$(( $(du -sm "$STAGING" | cut -f1) + 300 ))
+          echo "staging is $(du -sh "$STAGING" | cut -f1), image sized ${SIZE_MB}m"
+          hdiutil create -volname "Oryxis Nightly" -srcfolder "$STAGING" \
+            -size "${SIZE_MB}m" -ov -format UDZO oryxis-nightly-macos-aarch64.dmg
       - uses: actions/upload-artifact@v7
         with:
           name: oryxis-nightly-macos-aarch64
           path: |
             oryxis-nightly-macos-aarch64.tar.gz
             oryxis-nightly-macos-aarch64.bin
+            oryxis-nightly-macos-aarch64.dmg
 
   build-windows-x86:
     name: Windows x86_64

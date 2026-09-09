@@ -28,11 +28,13 @@ xattr -d com.apple.quarantine oryxis
 
 Running it this way is not the same as running the bundle: without `Oryxis.app` around it, macOS gives the process a different code identity, so anything keyed to that identity asks again. Touch ID unlock is the one you will notice, since the Keychain will want your login password the first time. Prefer the `.dmg` for daily use.
 
-## From a nightly .bin
+## Nightly builds
 
-`oryxis-nightly-macos-aarch64.bin` is the same bare executable under a different name. The nightly build publishes it because the in-app updater replaces its own binary in place and needs the executable rather than an installer, so if you already run a nightly you do not have to download anything by hand.
+The nightly publishes a `.dmg` of its own, and that is the one to use: install it exactly like the stable `.dmg` above. It carries the same app bundle, so what you are testing behaves like the app people install, which a bare binary does not.
 
-To run one manually, treat it exactly like the tarball binary:
+`oryxis-nightly-macos-aarch64.bin` is the bare executable instead. The nightly publishes it because the in-app updater replaces its own binary in place and needs the executable rather than an installer, so if you already run a nightly you do not have to download anything by hand.
+
+To run that one manually, treat it exactly like the tarball binary:
 
 ```
 chmod +x oryxis-nightly-macos-aarch64.bin
