@@ -314,6 +314,12 @@ pub(crate) fn probe_target(choice: &MirrorChoice) -> Option<String> {
 /// latency in milliseconds. Takes the fully-resolved URL from
 /// [`probe_target`], since the two mirror kinds address differently.
 pub(crate) async fn probe(url: String) -> Result<u64, String> {
+    // The mirror only routes what offline mode silences, so the Test
+    // button is hidden while the switch is on; the gate here is what
+    // keeps a keyboard row or a stale message from dialling anyway.
+    if crate::offline::is_on() {
+        return Err(crate::i18n::t("offline_mode").to_string());
+    }
     let client = reqwest::Client::builder()
         .user_agent(concat!("Oryxis/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(std::time::Duration::from_secs(4))

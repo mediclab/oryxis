@@ -100,6 +100,10 @@ pub enum UpdateError {
     Http(u16),
     /// Payload didn't contain the expected fields.
     Parse,
+    /// Offline mode is on (`crate::offline`): nothing was dialled. A
+    /// variant of its own so Settings > About can say so in the active
+    /// language instead of rendering a network failure.
+    Offline,
 }
 
 impl std::fmt::Display for UpdateError {
@@ -108,6 +112,7 @@ impl std::fmt::Display for UpdateError {
             UpdateError::Network(cause) => write!(f, "{cause}"),
             UpdateError::Http(status) => write!(f, "HTTP {status}"),
             UpdateError::Parse => write!(f, "unexpected API response"),
+            UpdateError::Offline => write!(f, "offline mode"),
         }
     }
 }
@@ -120,6 +125,9 @@ pub enum UpdateStatus {
     Checking,
     UpToDate,
     Failed(String),
+    /// A check was asked for while offline mode is on. Not a failure:
+    /// the row points at the switch instead of offering a retry.
+    Offline,
 }
 
 /// Boil a reqwest error chain down to its root cause, the part the user
@@ -172,6 +180,11 @@ pub struct ReadyUpdate {
 pub async fn check_latest_release(
     channel: UpdateChannel,
 ) -> Result<Option<UpdateInfo>, UpdateError> {
+    // The gate lives here, not at the three call sites (boot, manual,
+    // channel switch): a fourth added later inherits it.
+    if crate::offline::is_on() {
+        return Err(UpdateError::Offline);
+    }
     match channel {
         UpdateChannel::Stable => check_stable().await,
         UpdateChannel::Nightly => check_nightly().await,
@@ -425,7 +438,12 @@ fn pick_asset(
     // signature as the installer (verification then fails, so the cost
     // is a dead update, not code execution, but it is dead for every
     // user of that release).
-    let mut exclude = vec![".sig", ".sha256"];
+    // The offline bundle (`oryxis-offline-<platform>-<arch>.tar.gz` /
+    // `.zip`) satisfies the tarball and portable-zip fragments too, and
+    // asset order alone would decide whether a portable user is handed a
+    // 200 MB bundle as their update. It is never an update artifact: it
+    // is a seed for a machine with no network (`crate::bundle`).
+    let mut exclude = vec![".sig", ".sha256", "offline"];
     let want = match artifact {
         // The AppImage IS this platform's stable asset, so both stable
         // shapes share the fragment table; what differs is only how the
@@ -614,6 +632,12 @@ pub async fn download_installer(
 ) -> Result<PathBuf, String> {
     use tokio::io::AsyncWriteExt as _;
 
+    // An offer that was on screen when the switch flipped must not
+    // download on "Update now": the modal keeps its offer, the click
+    // reports the mode.
+    if crate::offline::is_on() {
+        return Err(crate::i18n::t("update_check_offline").to_string());
+    }
     let client = reqwest::Client::builder()
         .user_agent(concat!("Oryxis/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(600))
@@ -1231,6 +1255,19 @@ mod tests {
     fn stable_assets() -> serde_json::Value {
         serde_json::json!({
             "assets": [
+                // The offline bundles lead the list: they satisfy the
+                // tarball and portable-zip fragments and only the
+                // explicit exclude keeps them out of an update.
+                {"name": "oryxis-offline-windows-x86_64.zip",
+                 "browser_download_url": "https://example.com/oryxis-offline-windows-x86_64.zip"},
+                {"name": "oryxis-offline-windows-aarch64.zip",
+                 "browser_download_url": "https://example.com/oryxis-offline-windows-aarch64.zip"},
+                {"name": "oryxis-offline-macos-aarch64.tar.gz",
+                 "browser_download_url": "https://example.com/oryxis-offline-macos-aarch64.tar.gz"},
+                {"name": "oryxis-offline-linux-x86_64.tar.gz",
+                 "browser_download_url": "https://example.com/oryxis-offline-linux-x86_64.tar.gz"},
+                {"name": "oryxis-macos-aarch64.tar.gz",
+                 "browser_download_url": "https://example.com/oryxis-macos-aarch64.tar.gz"},
                 {"name": "oryxis-windows-x86_64.zip.sig",
                  "browser_download_url": "https://example.com/oryxis-windows-x86_64.zip.sig"},
                 {"name": "oryxis-windows-x86_64.zip",
@@ -1267,6 +1304,27 @@ mod tests {
         }
         let (_, name) = pick_asset(&stable_assets(), UpdateArtifact::AppImage);
         assert_eq!(name.as_deref(), Some("oryxis-linux-x86_64.AppImage"));
+    }
+
+    /// The bundle is a seed for a machine with no network, never an
+    /// update artifact: on every platform whose stable asset is an
+    /// archive the fragments alone would accept it.
+    #[test]
+    fn pick_asset_never_selects_the_offline_bundle() {
+        for artifact in [
+            UpdateArtifact::Installer,
+            UpdateArtifact::AppImage,
+            UpdateArtifact::PortableArchive,
+        ] {
+            let (_, name) = pick_asset(&stable_assets(), artifact);
+            if let Some(name) = name {
+                assert!(!name.contains("offline"), "{artifact:?} picked {name}");
+            }
+        }
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            let (_, name) = pick_asset(&stable_assets(), UpdateArtifact::Installer);
+            assert_eq!(name.as_deref(), Some("oryxis-macos-aarch64.tar.gz"));
+        }
     }
 
     #[test]

@@ -182,7 +182,19 @@ impl Oryxis {
 
         // (label, description, value, message), in the same order the
         // Features panel lists them so the two surfaces read alike.
+        // Offline mode LEADS, and is the one row not on that panel: it
+        // is a posture, not a feature, and it is offered here because
+        // the first request the app would make on its own waits for
+        // this screen (`boot_fetch_tasks`). Above the fold on purpose:
+        // the offline bundle arrives with it already on, and this row is
+        // where that shows. Settings > Advanced is its home afterwards.
         let mut rows: Vec<(&str, &str, bool, Message)> = vec![
+            (
+                t("offline_mode"),
+                t("offline_mode_desc"),
+                self.prefs.offline_mode,
+                Message::Settings(SettingsMessage::SettingToggleOfflineMode),
+            ),
             (
                 t("ai_assistant"),
                 t("feature_ai_desc"),

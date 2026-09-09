@@ -707,6 +707,49 @@ pub static PACK_FONTS: &[PackFont] = &[
     },
 ];
 
+/// Why a font could not be produced. `Offline` is its own variant so
+/// the handlers can say "offline mode" in the active language and drop
+/// their once-per-session guard for a retry once the switch is off,
+/// rather than reporting a download failure that never dialled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchError {
+    /// The file is neither cached nor bundled and offline mode is on.
+    Offline,
+    /// A download, integrity or filesystem failure, described.
+    Other(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Offline => f.write_str("offline mode is on"),
+            Self::Other(cause) => f.write_str(cause),
+        }
+    }
+}
+
+/// One pinned download, in the shape the release workflow packs the
+/// offline bundle from (`oryxis --font-pins`). The pins live here and
+/// only here; the workflow reads them off the built binary instead of
+/// keeping a copy that would drift.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FontPin {
+    pub file: &'static str,
+    pub url: &'static str,
+    pub sha256: &'static str,
+    pub len: u64,
+}
+
+/// Every pinned font file: the CJK faces, then the terminal pack.
+pub fn font_pins() -> Vec<FontPin> {
+    ASSETS
+        .iter()
+        .map(|a| &a.asset)
+        .chain(PACK_FONTS.iter().flat_map(|p| p.faces.iter().map(|f| &f.asset)))
+        .map(|a| FontPin { file: a.file, url: a.url, sha256: a.sha256, len: a.len })
+        .collect()
+}
+
 /// The pack entry for a picker family name, if it is one.
 pub fn pack_font(family: &str) -> Option<&'static PackFont> {
     PACK_FONTS.iter().find(|p| p.family == family)
@@ -733,10 +776,7 @@ pub fn pack_face_for(
 /// True when the face's file is already on disk at the expected size
 /// (same cheap validity test as [`is_language_cached`]).
 pub fn is_face_cached(face: &PackFace) -> bool {
-    cached_path(&face.asset)
-        .and_then(|p| std::fs::metadata(p).ok())
-        .map(|m| m.len() == face.asset.len)
-        .unwrap_or(false)
+    located(&face.asset).is_some()
 }
 
 /// The CJK asset a language needs, if any.
@@ -767,33 +807,49 @@ fn cached_path(asset: &FontAsset) -> Option<PathBuf> {
     Some(cache_dir()?.join(asset.file))
 }
 
-/// True when the language's font is already on disk at the expected
-/// size. Used to decide whether to show a "downloading" hint; the byte
-/// length is a cheap validity check (a half-written file fails it) so a
-/// boot existence test can't load a truncated download.
-pub fn is_language_cached(lang: Language) -> bool {
-    let Some(asset) = asset_for(lang) else {
-        return false;
-    };
-    cached_path(&asset.asset)
-        .and_then(|p| std::fs::metadata(p).ok())
-        .map(|m| m.len() == asset.asset.len)
-        .unwrap_or(false)
+/// Where the asset's bytes already are, if anywhere: the cache first,
+/// then the offline bundle's `fonts/` next to the executable
+/// (`crate::bundle`). One test for both, the pinned byte length (a
+/// half-written file fails it, so a boot existence test can't load a
+/// truncated download). The bundle copy is read THROUGH, never copied
+/// in: a pinned font is content-addressed and never ages, so there is
+/// nothing an import would buy for the 150 MB it would cost.
+fn located(asset: &FontAsset) -> Option<PathBuf> {
+    let candidates = [cached_path(asset), crate::bundle::fonts_dir().map(|d| d.join(asset.file))];
+    candidates.into_iter().flatten().find(|p| {
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.len() == asset.len)
+            .unwrap_or(false)
+    })
 }
 
-/// Read the cached font if present and the right size, otherwise
-/// download it (size-capped + SHA-256 verified, written atomically),
-/// and return the bytes ready for `iced::font::load`.
-async fn ensure_and_read(asset: &'static FontAsset) -> Result<Vec<u8>, String> {
-    let path = cached_path(asset).ok_or_else(|| "no home directory".to_string())?;
+/// True when the language's font is already on disk at the expected
+/// size (cache or bundle). Used to decide whether to show a
+/// "downloading" hint.
+pub fn is_language_cached(lang: Language) -> bool {
+    asset_for(lang).is_some_and(|a| located(&a.asset).is_some())
+}
 
-    if let Ok(meta) = tokio::fs::metadata(&path).await
-        && meta.len() == asset.len
+/// Read the font from wherever it already is (cache, bundle), otherwise
+/// download it (size-capped + SHA-256 verified, written atomically into
+/// the cache), and return the bytes ready for `iced::font::load`.
+async fn ensure_and_read(asset: &'static FontAsset) -> Result<Vec<u8>, FetchError> {
+    if let Some(path) = located(asset)
         && let Ok(bytes) = tokio::fs::read(&path).await
     {
         return Ok(bytes);
     }
+    // Only the download is silenced: a cached or bundled face above is
+    // a disk read and loads as it always did.
+    if crate::offline::is_on() {
+        return Err(FetchError::Offline);
+    }
+    let path = cached_path(asset).ok_or_else(|| FetchError::Other("no home directory".into()))?;
+    download_into(asset, &path).await.map_err(FetchError::Other)
+}
 
+/// The download half of [`ensure_and_read`].
+async fn download_into(asset: &'static FontAsset, path: &std::path::Path) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::builder()
         .user_agent(concat!("Oryxis/", env!("CARGO_PKG_VERSION")))
         // Bound the request so a stalled connection becomes the Err
@@ -861,7 +917,7 @@ async fn ensure_and_read(asset: &'static FontAsset) -> Result<Vec<u8>, String> {
         }
         .await;
         if wrote.is_some() {
-            let _ = tokio::fs::rename(&tmp, &path).await;
+            let _ = tokio::fs::rename(&tmp, path).await;
             // fsync the directory so the rename itself survives a power
             // loss (the durability step download.rs documents as required).
             if let Ok(d) = tokio::fs::File::open(&dir).await {

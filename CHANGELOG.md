@@ -4,6 +4,17 @@ All notable changes to Oryxis are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Offline mode (Settings > Advanced, and the first-run features step): Oryxis makes no request of its own. Update checks, font downloads and the plugin catalog go quiet, manual ones included, and each surface says so where it would have acted; hosts, AI, sync and cloud accounts are untouched. Turning it off restores everything at once.
+- An offline bundle per platform (`oryxis-offline-<platform>-<arch>`) next to every release: the app, every plugin and the font packs, with offline mode already on at first run. Plugins seed the ordinary cache through the same signature gate a download passes.
+
+### Fixed
+- Touch ID unlock could never be turned on: enrolment asked for a Keychain item that gates itself, which lives only in a keychain a paid Apple developer identity can reach. The presence check is now raised around the read, so it works on the build we ship (#222, diagnosed by @mediclab).
+- A vault with a master password booted its update check and font downloads on the default download mirror whatever the setting said, and never healed the configured terminal font at launch.
+- A first run no longer checks for updates before the onboarding is answered.
+
 ## [0.17.0] - 2026-09-07
 
 Split panes come into their own: each pane of a split tab can carry its own title bar, be dragged to a new place, leave for a tab of its own, and end on its own terms with a card offering restart or close. Alongside them, a recording can mirror itself into a plain text file while the session runs, last session's tabs come back at launch, a live session can ask before it is closed, a link printed by a remote host is confirmed before the browser opens and a CLI login's callback is tunnelled home, the SFTP console completes the `sftp(1)` command set, and the sidebar Files browser gains multi-select.

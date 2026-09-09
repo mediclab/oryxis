@@ -22,13 +22,23 @@
 //!   Credential Manager (per-user, DPAPI-backed) and every read is gated
 //!   behind `UserConsentVerifier` (Windows Hello: face / fingerprint /
 //!   PIN).
-//! - **macOS** ([`TouchId`]): a Keychain item whose `SecAccessControl`
-//!   carries the biometry-current-set flag, so `SecItemCopyMatching`
-//!   intrinsically raises the Touch ID / Apple Watch prompt.
+//! - **macOS** ([`TouchId`]): the master password lives in the login
+//!   Keychain (per user, guarded by the Keychain's own code-identity
+//!   ACL) and every read is gated behind a LocalAuthentication presence
+//!   check: Touch ID, a paired Apple Watch, or the login password.
 //! - **Linux** ([`SecretServiceStore`]): the freedesktop Secret Service
 //!   (login keyring). Linux has no standard fingerprint API, so this is
 //!   "OS keystore gated by the unlocked login session", not real
 //!   biometry. The UI says so rather than implying a fingerprint.
+//!
+//! On Windows and macOS the prompt is raised by the app around the read;
+//! the stored item is not itself bound to it. Binding the two is a
+//! platform facility a freely distributable build cannot claim (on macOS
+//! it means a data-protection Keychain item, whose entitlement is
+//! restricted and therefore wants a paid developer identity), and what
+//! it would add cover against is code already running as this user, on a
+//! Mac already unlocked. Which is the same code that can read the master
+//! password out of the running app's memory.
 //!
 //! Because the running app already holds the master password in memory
 //! while unlocked (the sync path reads it), enrolling does not widen the

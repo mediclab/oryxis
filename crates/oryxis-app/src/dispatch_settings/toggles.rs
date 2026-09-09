@@ -41,6 +41,26 @@ impl Oryxis {
                     return Ok(self.close_panel_tab(crate::state::PanelKind::NetTools));
                 }
             }
+            SettingsMessage::SettingToggleOfflineMode => {
+                self.prefs.offline_mode = !self.prefs.offline_mode;
+                crate::offline::set(self.prefs.offline_mode);
+                self.persist_setting(
+                    crate::offline::SETTING_KEY,
+                    if self.prefs.offline_mode { "true" } else { "false" },
+                );
+                if self.prefs.offline_mode {
+                    // A status line left over from a check that ran
+                    // online would contradict the row now above it.
+                    self.update_check_status = None;
+                    return Ok(Task::none());
+                }
+                // Off restores every feature NOW, not at the next boot:
+                // the same fetches boot would have made, each still
+                // behind its own gate (auto-check, cache, guards).
+                let mut tasks = self.boot_fetch_tasks();
+                tasks.extend(self.unlock_fetch_tasks());
+                return Ok(Task::batch(tasks));
+            }
             SettingsMessage::SettingToggleRemoteDesktop => {
                 self.remote_desktop_enabled = !self.remote_desktop_enabled;
                 self.persist_setting(

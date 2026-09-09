@@ -169,6 +169,12 @@ pub(crate) struct AppPrefs {
     /// UI is hidden: no burger entry, no tab, no way in (the
     /// optional-features rule). `"network_tools_enabled"` setting.
     pub(crate) network_tools: bool,
+    /// Offline mode: the app makes no request of its own (update checks,
+    /// font and plugin downloads). Mirror of the process-wide gate in
+    /// `crate::offline`, which is what the fetch functions read; this
+    /// field is what the toggles render. Hydrated pre-unlock like the
+    /// update settings. `"offline_mode"` setting.
+    pub(crate) offline_mode: bool,
     /// When the foreground and background of a cell render too close
     /// to each other (LS_COLORS' `ow` over a green palette,
     /// PowerShell's `$PSStyle.FileInfo.Directory` blue-on-blue, …),
@@ -644,6 +650,7 @@ impl Default for AppPrefs {
             performance_mode: false,
             perf_overlay: false,
             network_tools: false,
+            offline_mode: false,
             smart_contrast: true,
             bell_mode: crate::util::BellMode::default(),
             clipboard_access: crate::util::ClipboardAccess::default(),

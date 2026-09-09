@@ -13,6 +13,7 @@ mod ai;
 mod app;
 mod biometric;
 mod boot;
+mod bundle;
 mod jumplist;
 mod color_picker;
 mod chat_persist;
@@ -86,6 +87,7 @@ mod stall_watchdog;
 mod agent_server;
 mod dispatch_agent;
 mod net_mirror;
+mod offline;
 // The network tools panel's probes (DNS, ping, port, HTTP/TLS, WHOIS,
 // DNSBL). Hidden behind the `network_tools_enabled` setting, off by
 // default, like every other optional surface.
@@ -166,6 +168,18 @@ const MIN_WIDTH: f32 = 800.0;
 const MIN_HEIGHT: f32 = 500.0;
 
 fn main() -> iced::Result {
+    // `--font-pins`: print the pinned font downloads (file, url, sha256,
+    // len) as JSON and exit. The release workflow packs the offline
+    // bundle from this instead of a second copy of the pins that would
+    // drift from `fonts.rs`. First thing in `main`, before the harness
+    // redirect, the logging sink, the single-instance mutex or any
+    // `~/.oryxis` touch: it is a query about the binary, not a run of it.
+    if std::env::args().skip(1).any(|a| a == "--font-pins") {
+        let json = serde_json::to_string_pretty(&fonts::font_pins())
+            .expect("font pins serialize");
+        println!("{json}");
+        std::process::exit(0);
+    }
     // Headless E2E harness argument pickup (feature `harness`). Must
     // run before anything else touches the vault or the environment:
     // when a harness mode is requested it redirects $HOME to a sandbox

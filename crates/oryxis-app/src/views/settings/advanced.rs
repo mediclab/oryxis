@@ -8,8 +8,8 @@ impl Oryxis {
     pub(crate) fn view_settings_advanced(&self) -> Element<'_, Message> {
         // Keyboard rows are recorded in visual order.
         self.keynav_settings_reset();
-        // ── Download mirror (China / blocked-network delivery) ──
-        let mirror_section = self.download_mirror_section();
+        // ── Network: offline mode, then the download mirror ──
+        let network_section = self.network_section();
         // ── Debug logging ──
         let log_path = crate::logging::log_path()
             .map(|p| p.display().to_string())
@@ -115,7 +115,7 @@ impl Oryxis {
         scrollable(
             container(
                 column![
-                    mirror_section,
+                    network_section,
                     Space::new().height(12),
                     diagnostics_section,
                     Space::new().height(24),
@@ -133,12 +133,41 @@ impl Oryxis {
         .into()
     }
 
-    /// The download-mirror block: picker (Auto / GitHub / Custom),
-    /// and while Custom is selected a URL field plus a Test button
-    /// running the reachability probe. Content integrity never
+    /// One card for what the app fetches on its own: the offline switch
+    /// first, then the download mirror it supersedes. While the switch
+    /// is on the mirror rows are not built at all (a picker that could
+    /// still be changed, and a Test that would only ever answer
+    /// "offline", would be two controls pretending to do something) and
+    /// one line says why.
+    fn network_section(&self) -> Element<'_, Message> {
+        let mut rows = column![
+            self.nav_toggle_row(
+                t("offline_mode"),
+                self.prefs.offline_mode,
+                Message::Settings(SettingsMessage::SettingToggleOfflineMode),
+            ),
+            Space::new().height(4),
+            text(t("offline_mode_desc")).size(11).color(OryxisColors::t().text_muted),
+            Space::new().height(16),
+        ];
+        if self.prefs.offline_mode {
+            rows = rows.push(
+                text(t("offline_mode_mirror_superseded"))
+                    .size(11)
+                    .color(OryxisColors::t().text_secondary),
+            );
+        } else {
+            rows = rows.push(self.download_mirror_rows());
+        }
+        panel_section(rows)
+    }
+
+    /// The download-mirror rows: picker (Auto / GitHub / Project /
+    /// Custom), and while Custom is selected a URL field plus a Test
+    /// button running the reachability probe. Content integrity never
     /// depends on the mirror (sha256/Ed25519 gates), so the URL is
     /// user-configurable without a trust prompt.
-    fn download_mirror_section(&self) -> Element<'_, Message> {
+    fn download_mirror_rows(&self) -> Element<'_, Message> {
         let ui = &self.download_mirror;
 
         // `custom_pending` is the only case the choice can't answer:
@@ -277,6 +306,6 @@ impl Oryxis {
             }
         }
 
-        panel_section(rows)
+        rows.into()
     }
 }

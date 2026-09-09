@@ -224,13 +224,25 @@ impl Oryxis {
                 OryxisColors::t().accent,
             ),
         );
-        let status_line: Element<'_, Message> = match &self.update_check_status {
+        // Offline mode is said here whether or not a check was asked
+        // for: the row above still offers one, and this is where the
+        // answer to "why has it not run" belongs.
+        let status = if self.prefs.offline_mode {
+            Some(crate::update::UpdateStatus::Offline)
+        } else {
+            self.update_check_status.clone()
+        };
+        let status_line: Element<'_, Message> = match &status {
             Some(status) => {
                 use crate::update::UpdateStatus;
                 let (msg, color) = match status {
                     UpdateStatus::Checking => (
                         t("update_check_checking").to_string(),
                         OryxisColors::t().text_muted,
+                    ),
+                    UpdateStatus::Offline => (
+                        t("update_check_offline").to_string(),
+                        OryxisColors::t().warning,
                     ),
                     UpdateStatus::UpToDate => (
                         format!(

@@ -184,6 +184,13 @@ impl Oryxis {
     /// auto-update of an already-installed MCP.
     pub(crate) fn spawn_plugin_unlock_tasks(&mut self) -> Vec<Task<Message>> {
         let mut tasks = Vec::new();
+        // Offline mode: both fetches would answer `PluginError::Offline`
+        // at once, the migration flipping its card to an error the
+        // Plugins panel's own banner already explains. Nothing to spawn;
+        // the switch going off re-runs this.
+        if self.prefs.offline_mode {
+            return tasks;
+        }
 
         // MCP migration: v0.6 shipped `oryxis-mcp` inside the OS
         // package; v0.7+ downloads it as a plugin. Install it now when

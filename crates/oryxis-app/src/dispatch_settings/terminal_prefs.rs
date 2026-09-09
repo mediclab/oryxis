@@ -139,11 +139,16 @@ impl Oryxis {
                         target = "oryxis::fonts",
                         face = %key,
                         error = %e,
-                        "pack font download failed; keeping the fallback rendering"
+                        "pack font not loaded; keeping the fallback rendering"
                     );
-                    // Drop the guard so re-picking the font retries.
+                    // Drop the guard so re-picking the font (or the
+                    // offline switch going off) retries.
                     self.loaded_pack_fonts.remove(&key);
-                    self.set_toast(crate::i18n::t("font_pack_failed").to_string());
+                    let toast = match e {
+                        crate::fonts::FetchError::Offline => "font_pack_offline",
+                        crate::fonts::FetchError::Other(_) => "font_pack_failed",
+                    };
+                    self.set_toast(crate::i18n::t(toast).to_string());
                     return Ok(Task::perform(
                         async {
                             tokio::time::sleep(
@@ -550,7 +555,10 @@ impl Oryxis {
         if !self.loaded_pack_fonts.insert(face.key().to_string()) {
             return None;
         }
-        if !crate::fonts::is_face_cached(face) {
+        // Under offline mode the task answers at once with its own
+        // toast; a "downloading" hint before it would promise what is
+        // not going to happen.
+        if !crate::fonts::is_face_cached(face) && !crate::offline::is_on() {
             self.set_toast(crate::i18n::t("font_pack_downloading").to_string());
         }
         Some(crate::fonts::ensure_pack_task(face))

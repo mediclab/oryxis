@@ -63,6 +63,12 @@ impl Oryxis {
         // same-version "update" on every boot.
         let mut auto_check_updates = true;
         let mut update_channel = crate::update::UpdateChannel::default();
+        // Offline mode and the download mirror, hydrated pre-unlock for
+        // the same reason: the boot fetches below run while the vault
+        // can still be locked, and a locked-vault boot used to dial
+        // GitHub on the default mirror whatever the user had picked.
+        let mut offline_mode = false;
+        let mut download_mirror = crate::net_mirror::MirrorUi::default();
 
         // Language baseline before any vault read: follow the OS locale
         // (English when unsupported), so the very first boot, the setup
@@ -182,6 +188,55 @@ impl Oryxis {
             }
             if let Ok(Some(c)) = v.get_setting("update_channel") {
                 update_channel = crate::update::UpdateChannel::from_setting(&c);
+            }
+            // The settings row wins whenever it exists. Only a data dir
+            // that never answered consults the offline bundle's marker
+            // beside the executable (`bundle::MARKER`), and the answer
+            // is written down so a marker removed later, or an ordinary
+            // install put in its place, does not flip the switch back.
+            offline_mode = match v.get_setting(crate::offline::SETTING_KEY) {
+                Ok(Some(flag)) => flag == "true",
+                _ => {
+                    let seeded = crate::bundle::marker_present();
+                    if seeded {
+                        let _ = v.set_setting(crate::offline::SETTING_KEY, "true");
+                    }
+                    seeded
+                }
+            };
+            crate::offline::set(offline_mode);
+            if let Ok(Some(m)) = v.get_setting("download_mirror") {
+                let choice = crate::net_mirror::MirrorChoice::from_setting(&m);
+                if let crate::net_mirror::MirrorChoice::Custom(url) = &choice {
+                    download_mirror.url_input = url.clone();
+                }
+                download_mirror.choice = choice.clone();
+                crate::net_mirror::set_choice(choice);
+            }
+            // The offline bundle's plugin seeds go into the cache before
+            // the plugin rows are built from it, so a seeded provider
+            // boots as Installed. Needs no unlock; the pin is a plaintext
+            // row. A seed that became the active MCP version also has to
+            // reach the stable launcher path external clients spawn.
+            {
+                let pinned = |id: &str| {
+                    v.get_setting(&format!("plugins_{id}_pinned_version"))
+                        .ok()
+                        .flatten()
+                        .filter(|s| !s.is_empty())
+                };
+                for imported in crate::plugins::seed::import_bundled(&pinned) {
+                    if imported.activated
+                        && imported.provider_id == "mcp"
+                        && let Err(e) = crate::mcp_install::sync_launcher_from_cache()
+                    {
+                        tracing::warn!(
+                            target = "oryxis::mcp",
+                            error = %e,
+                            "seeded MCP plugin could not be copied to the launcher path"
+                        );
+                    }
+                }
             }
             // Same clamp as main(): a corrupt row must not produce a
             // degenerate size (it feeds terminal layout math via
@@ -489,6 +544,7 @@ impl Oryxis {
                     biometric_unlock_enabled,
                     auto_check_updates,
                     update_channel,
+                    offline_mode,
                     ..Default::default()
                 },
                 sftp_edit_upload_all: false,
@@ -553,7 +609,7 @@ impl Oryxis {
                 sidebar_snippet_group: None,
                 pending_perf_mode_toast: false,
                 privacy: crate::state::PrivacyState::default(),
-                download_mirror: Default::default(),
+                download_mirror,
                 agent: crate::state::AgentState::default(),
                 tray_menu_signature: 0,
                 jumplist_signature: 0,
@@ -650,13 +706,14 @@ impl Oryxis {
         // after boot. When the vault is locked, we defer until VaultUnlock
         // succeeds (handled in that branch).
         let mut tasks = vec![task];
-        // The boot release lookup is for a person to act on, so an
-        // emulated run skips it (`app::HARNESS_ACTIVE`) rather than
-        // waiting on a network it does not control. The handler's own
-        // `auto_check_updates` gate stays the user-facing switch; this
-        // one is about who is watching.
-        if !crate::app::harness_active() {
-            tasks.push(Task::done(Message::Update(UpdateMessage::CheckForUpdate)));
+        // The app's own fetches (release lookup, the CJK face the
+        // language needs). NOT on a first run: the onboarding offers
+        // offline mode a few slides in, and a request already in flight
+        // by then would make the offer a lie for the first request.
+        // The vault-creation arms fire the same helper once the answer
+        // is known.
+        if app.vault_ui.state != VaultState::NeedSetup {
+            tasks.extend(app.boot_fetch_tasks());
         }
         // A Windows nightly self-replace that fails after the app has
         // exited has no UI left to report to; the helper leaves a marker
@@ -764,32 +821,12 @@ impl Oryxis {
         // from the `VaultUnlock` handler instead.
         tasks.push(app.take_perf_mode_toast_task());
 
-        // If the saved language uses a CJK script (Korean / Chinese /
-        // Japanese), fetch + load its on-demand font now so the lock
-        // screen and the rest of the UI render it instead of tofu. The
-        // language was already the user's choice, so this is silent (no
-        // toast). A missing font degrades to the system CJK font.
-        {
-            let lang = crate::i18n::Language::active();
-            if let Some(code) = crate::fonts::asset_code(lang) {
-                app.loaded_cjk_fonts.insert(code.to_string());
-                tasks.push(crate::fonts::ensure_task(lang));
-            }
-        }
-
-        // Terminal font pack (issue #109): load every already-cached
-        // pack face now so a terminal picked to one of them renders
-        // right from its first frame, and silently fetch the face the
-        // picked family + weight needs when it isn't cached yet
-        // (settings that arrived via sync / import land on a machine
-        // without the file). Guard semantics mirror the CJK block
-        // above.
-        for (key, task) in crate::fonts::boot_pack_tasks(
-            &app.terminal_font_name,
-            app.terminal_font_weight,
-        ) {
-            app.loaded_pack_fonts.insert(key.to_string());
-            tasks.push(task);
+        // The terminal font pack rides `unlock_fetch_tasks`: the picked
+        // family and weight are vault settings, so for a password vault
+        // the heal used to run against the constructor's default font
+        // and never against the configured one.
+        if app.vault_ui.state == VaultState::Unlocked {
+            tasks.extend(app.unlock_fetch_tasks());
         }
 
         // A restored position may reference a monitor that is gone
@@ -872,5 +909,69 @@ impl Oryxis {
             },
             |_| Message::ToastClear,
         )
+    }
+}
+
+impl Oryxis {
+    /// The fetches the app makes on its own before the vault is
+    /// unlocked: the release lookup and the CJK face the active
+    /// language needs (the lock screen renders in it). Each is behind
+    /// its own gate (`auto_check_updates`, the once-per-session font
+    /// guard) and every one honors offline mode at the engine
+    /// (`crate::offline`), with one deliberate asymmetry: the update
+    /// check is not spawned at all while offline, since Settings > About
+    /// already says why, while the font task IS, because its typed
+    /// `Offline` answer is how the font that cannot heal reports itself.
+    ///
+    /// Boot calls this for an existing vault; a first run defers it to
+    /// the vault-creation arms, after the onboarding had its chance to
+    /// turn offline mode on; and the offline toggle going off calls it
+    /// so nothing waits for the next launch.
+    pub(crate) fn boot_fetch_tasks(&mut self) -> Vec<Task<Message>> {
+        let mut tasks = Vec::new();
+        // The boot release lookup is for a person to act on, so an
+        // emulated run skips it (`app::HARNESS_ACTIVE`) rather than
+        // waiting on a network it does not control. The handler's own
+        // `auto_check_updates` gate stays the user-facing switch; this
+        // one is about who is watching.
+        if !crate::app::harness_active() {
+            tasks.push(Task::done(Message::Update(UpdateMessage::CheckForUpdate)));
+        }
+        // If the saved language uses a CJK script (Korean / Chinese /
+        // Japanese), fetch + load its on-demand font now so the lock
+        // screen and the rest of the UI render it instead of tofu. The
+        // language was already the user's choice, so a cached or
+        // bundled face loads silently; only a miss speaks, through the
+        // `CjkFontReady` handler.
+        let lang = crate::i18n::Language::active();
+        if let Some(code) = crate::fonts::asset_code(lang)
+            && !self.loaded_cjk_fonts.contains(code)
+        {
+            self.loaded_cjk_fonts.insert(code.to_string());
+            tasks.push(crate::fonts::ensure_task(lang));
+        }
+        tasks
+    }
+
+    /// The fetches that need the vault's own settings: the terminal font
+    /// pack (issue #109). Loads every already-cached pack face so a
+    /// terminal picked to one of them renders right from its first
+    /// frame, and fetches the face the picked family + weight needs when
+    /// it isn't cached yet (settings that arrived via sync / import land
+    /// on a machine without the file). Called wherever
+    /// `load_data_from_vault` first runs for the session (boot for an
+    /// open vault, the unlock, the two vault-creation arms) and when
+    /// offline mode goes off; the guard keeps a second call cheap.
+    pub(crate) fn unlock_fetch_tasks(&mut self) -> Vec<Task<Message>> {
+        let mut tasks = Vec::new();
+        for (key, task) in crate::fonts::boot_pack_tasks(
+            &self.terminal_font_name,
+            self.terminal_font_weight,
+        ) {
+            if self.loaded_pack_fonts.insert(key.to_string()) {
+                tasks.push(task);
+            }
+        }
+        tasks
     }
 }

@@ -137,6 +137,22 @@ impl Oryxis {
                 self.agent_server_toggle(),
             ]),
             Space::new().height(18).into(),
+            // Offline mode: the catalog and the binaries are not fetched,
+            // by the user's own choice. Said once here, above the list,
+            // rather than as a network failure on every card: the cards
+            // keep their disk-derived status and a click on any of them
+            // lands on the same answer.
+            if self.prefs.offline_mode {
+                container(
+                    text(crate::i18n::t("plugins_offline_banner"))
+                        .size(12)
+                        .color(OryxisColors::t().warning),
+                )
+                .padding(Padding { top: 0.0, right: 0.0, bottom: 14.0, left: 0.0 })
+                .into()
+            } else {
+                Space::new().into()
+            },
             // Plugins list header: subtitle on the leading edge; the
             // list-wide actions (one update check for every installed
             // row + the global auto-update toggle) on the trailing
@@ -256,6 +272,15 @@ impl Oryxis {
             None if checking => text(crate::i18n::t("plugin_status_checking"))
                 .size(12)
                 .color(OryxisColors::t().text_muted)
+                .into(),
+            // Offline mode: no host was consulted, so the firewall
+            // allowlist below would name hosts the user asked not to
+            // reach. Decided from the switch, not from the fetch's
+            // error text (which is English and only says what one
+            // attempt reported).
+            None if self.prefs.offline_mode => text(crate::i18n::t("plugin_err_offline"))
+                .size(12)
+                .color(OryxisColors::t().warning)
                 .into(),
             // The manifest DID arrive and every version in it was
             // filtered out (min_app / protocol / platform). Nothing

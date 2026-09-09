@@ -47,6 +47,16 @@ jobs:
           cp target/release/oryxis dist/
           cp README.md resources/logo_64.png resources/oryxis.desktop dist/
           cd dist && tar czf ../oryxis-linux-x86_64.tar.gz *
+      # The pinned font downloads, read off the binary just built
+      # (`fonts.rs` is the only copy of the pins). Emitted here rather
+      # than in the bundle job, which runs on a bare runner without the
+      # `-dev` packages this dynamically linked binary needs to start.
+      - name: Export font pins for the offline bundle
+        run: target/release/oryxis --font-pins > font-pins.json && head -c 400 font-pins.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: font-pins
+          path: font-pins.json
 
       # `.deb` for Debian/Ubuntu/derivatives. cargo-deb reads
       # [package.metadata.deb] in oryxis-app/Cargo.toml.
@@ -706,6 +716,138 @@ jobs:
             oryxis-user-setup-aarch64.exe
             oryxis-*.sig
 
+  # The offline bundle: one ADDITIONAL asset per platform / arch,
+  # `oryxis-offline-<platform>-<arch>.{tar.gz,zip}`, carrying the app
+  # plus every plugin binary plus the pinned font files, with offline
+  # mode already on at first run (the `offline-bundle` marker,
+  # `crates/oryxis-app/src/bundle.rs`). Additional is the point: the
+  # plugins and fonts together are ~5x the installer, for what a
+  # minority needs.
+  #
+  # The plugins are PULLED, never built: `plugins/<provider>.json` in
+  # this repo is the pin (the same catalog the app installs from), and
+  # the binary is fetched from the URL that entry names and checked
+  # against the sha256 it carries. That keeps the app's release
+  # decoupled from the plugins' own `aws-v*` / `mcp-v*` / `gif-v*`
+  # cadence. The fonts come from the pins the binary itself exports
+  # (`--font-pins`), sha256-checked the same way. Both catalog and
+  # signature travel INTO the bundle, so the app imports the seed
+  # through the same Ed25519 gate a download passes.
+  bundle:
+    name: Offline bundle
+    needs: [release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      # A full checkout: the catalog under `plugins/` is the pin, and
+      # the signer builds from the tree.
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with:
+          name: font-pins
+      - uses: actions/download-artifact@v8
+        with:
+          name: oryxis-linux-x86_64
+      - uses: actions/download-artifact@v8
+        with:
+          name: oryxis-linux-aarch64
+      - uses: actions/download-artifact@v8
+        with:
+          name: oryxis-macos-aarch64
+      - uses: actions/download-artifact@v8
+        with:
+          name: oryxis-windows-x86_64
+      - uses: actions/download-artifact@v8
+        with:
+          name: oryxis-windows-aarch64
+
+      - name: Fetch the pinned fonts
+        run: |
+          set -euo pipefail
+          mkdir -p seed/fonts
+          jq -r '.[] | "\(.file)\t\(.url)\t\(.sha256)"' font-pins.json |
+          while IFS=$'\t' read -r file url sha; do
+            curl -sSfL --retry 3 -o "seed/fonts/$file" "$url"
+            echo "$sha  seed/fonts/$file" | sha256sum -c --quiet
+          done
+          du -sh seed/fonts
+
+      - name: Fetch the pinned plugins
+        run: |
+          set -euo pipefail
+          # One directory per platform label the manifests use; the
+          # binary file name is what the app's cache expects
+          # (`plugins::cache::binary_name`), not the release asset's.
+          for cat in plugins/*.json; do
+            id=$(basename "$cat" .json)
+            case "$id" in
+              mcp) bin=oryxis-mcp ;;
+              gif) bin=oryxis-gif ;;
+              *)   bin="oryxis-cloud-$id-plugin" ;;
+            esac
+            # The newest version in the catalog: the same pick the app
+            # makes for a current build. Its platform rows name the
+            # download and the hash.
+            jq -c '.versions | max_by(.version | split(".") | map(tonumber)) | .binaries[]' "$cat" |
+            while read -r row; do
+              os=$(jq -r .os <<<"$row"); arch=$(jq -r .arch <<<"$row")
+              url=$(jq -r .url <<<"$row"); sha=$(jq -r .sha256 <<<"$row")
+              dir="seed/plugins-$os-$arch"
+              mkdir -p "$dir"
+              ext=""; [ "$os" = windows ] && ext=".exe"
+              curl -sSfL --retry 3 -o "$dir/$bin$ext" "$url"
+              echo "$sha  $dir/$bin$ext" | sha256sum -c --quiet
+              cp "$cat" "$dir/$id.json"
+            done
+          done
+          du -sh seed/plugins-*
+
+      - name: Assemble the bundles
+        run: |
+          set -euo pipefail
+          # (label, app archive, kind)
+          pack() {
+            label="$1"; os="$2"; arch="$3"; src="$4"; kind="$5"
+            stage="stage/$label"; mkdir -p "$stage"
+            case "$kind" in
+              tar) tar xzf "$src" -C "$stage" ;;
+              zip) unzip -q "$src" -d "$stage" ;;
+            esac
+            : > "$stage/offline-bundle"
+            cp -r "seed/plugins-$os-$arch" "$stage/plugins"
+            cp -r seed/fonts "$stage/fonts"
+            case "$kind" in
+              tar) (cd "$stage" && tar czf "$GITHUB_WORKSPACE/oryxis-offline-$label.tar.gz" .) ;;
+              zip) (cd "$stage" && zip -qr "$GITHUB_WORKSPACE/oryxis-offline-$label.zip" .) ;;
+            esac
+          }
+          pack linux-x86_64   linux   x86_64  oryxis-linux-x86_64.tar.gz  tar
+          pack linux-aarch64  linux   aarch64 oryxis-linux-aarch64.tar.gz tar
+          pack macos-aarch64  macos   aarch64 oryxis-macos-aarch64.tar.gz tar
+          pack windows-x86_64  windows x86_64  oryxis-windows-x86_64.zip  zip
+          pack windows-aarch64 windows aarch64 oryxis-windows-aarch64.zip zip
+          ls -la oryxis-offline-*
+
+      # The same detached Ed25519 signature every other asset carries.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Sign the bundles
+        env:
+          ORYXIS_SIGNING_KEY: ${{ secrets.ORYXIS_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p oryxis-plugin-signer
+          for f in oryxis-offline-*; do
+            case "$f" in *.sig) continue ;; esac
+            ./target/release/oryxis-plugin-signer sign "$f" > "$f.signinfo"
+            grep '^signature_b64' "$f.signinfo" | awk '{print $3}' > "$f.sig"
+            rm "$f.signinfo"
+          done
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" oryxis-offline-* --clobber
+
   aur:
     name: Publish to AUR
     needs: [release]
@@ -779,9 +921,12 @@ jobs:
   # (dl.oryxis.app / dl-cn.oryxis.app), the Auto fallback for networks
   # where GitHub is blocked (mainland China). Layout contract lives in
   # publish-mirror.yml and net_mirror.rs.
+  # `bundle` is in the list on purpose: the mirror snapshots whatever
+  # the release carries when it runs, and the blocked-network user the
+  # mirror exists for is exactly who needs the offline bundle.
   mirror:
     name: Publish to download mirror
-    needs: [release]
+    needs: [release, bundle]
     uses: ./.github/workflows/publish-mirror.yml
     with:
       tag: ${{ github.ref_name }}

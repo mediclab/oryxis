@@ -404,6 +404,7 @@ impl Oryxis {
             | SettingsMessage::SettingTogglePerfOverlay
             | SettingsMessage::SettingToggleNetworkTools
             | SettingsMessage::SettingToggleRemoteDesktop
+            | SettingsMessage::SettingToggleOfflineMode
             | SettingsMessage::SettingToggleCloseToTray
             | SettingsMessage::SettingToggleMinimizeToTray
             | SettingsMessage::SettingToggleSftpEnabled

@@ -61,6 +61,12 @@ impl Oryxis {
                 // "Checking…" status + toast as a manual check) instead of
                 // waiting for the next boot check.
                 self.update_error = None;
+                if self.prefs.offline_mode {
+                    // The stream is recorded; the check it would have
+                    // run is what the About row now explains.
+                    self.update_check_status = Some(crate::update::UpdateStatus::Offline);
+                    return Task::none();
+                }
                 self.update_check_status = Some(crate::update::UpdateStatus::Checking);
                 self.set_toast(crate::i18n::t("update_check_checking").to_string());
                 return Task::perform(
@@ -72,7 +78,11 @@ impl Oryxis {
                 );
             }
             UpdateMessage::CheckForUpdate => {
-                if !self.prefs.auto_check_updates {
+                // Offline mode is answered by the engine too
+                // (`UpdateError::Offline`), but the boot check would
+                // only log that refusal once per launch while Settings >
+                // About already says it; nothing to spawn.
+                if !self.prefs.auto_check_updates || self.prefs.offline_mode {
                     return Task::none();
                 }
                 // Also respect a persisted "skip this version" so we never
@@ -115,6 +125,12 @@ impl Oryxis {
                 // Settings would show with no chip (issue #120).
                 self.ensure_panel_tab(crate::state::PanelKind::Settings);
                 self.update_error = None;
+                if self.prefs.offline_mode {
+                    // The click still lands on About, where the row
+                    // names the switch instead of a network failure.
+                    self.update_check_status = Some(crate::update::UpdateStatus::Offline);
+                    return Task::none();
+                }
                 self.update_check_status = Some(crate::update::UpdateStatus::Checking);
                 self.set_toast(crate::i18n::t("update_check_checking").to_string());
                 if let Some(vault) = &self.vault {

@@ -28,9 +28,32 @@ use super::PluginError;
 /// Root of the plugin cache: `~/.oryxis/plugins/`. Created on demand
 /// by the callers that write into it.
 pub fn cache_root() -> Result<PathBuf, PluginError> {
+    #[cfg(test)]
+    if let Some(root) = TEST_ROOT.with(|r| r.borrow().clone()) {
+        return Ok(root);
+    }
     oryxis_core::paths::oryxis_dir()
         .ok_or_else(|| PluginError::Io(std::io::Error::other("no home directory")))
         .map(|dir| dir.join("plugins"))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A per-thread cache root for tests that WRITE (the seed import):
+    /// the process-wide `ORYXIS_HOME` is off limits from a unit test
+    /// (`set_var` is unsafe under Rust 2024 and the test threads share
+    /// the environment), and without a redirect the only place to write
+    /// is the developer's real `~/.oryxis`.
+    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with the cache rooted at `root` on this thread only.
+#[cfg(test)]
+pub(crate) fn with_test_root<T>(root: &std::path::Path, f: impl FnOnce() -> T) -> T {
+    TEST_ROOT.with(|r| *r.borrow_mut() = Some(root.to_path_buf()));
+    let out = f();
+    TEST_ROOT.with(|r| *r.borrow_mut() = None);
+    out
 }
 
 /// Per-provider directory: `~/.oryxis/plugins/<provider>/`.

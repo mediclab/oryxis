@@ -166,6 +166,13 @@ impl Oryxis {
             }
             SettingsMessage::DownloadMirrorTest => {
                 use crate::net_mirror::MirrorChoice;
+                // The block is hidden while offline mode is on; a stale
+                // keyboard row still lands here, and answers in place.
+                if self.prefs.offline_mode {
+                    self.download_mirror.test_result =
+                        Some(Err(crate::i18n::t("offline_mode").to_string()));
+                    return Ok(Task::none());
+                }
                 // Custom is tested against the field's LIVE contents,
                 // which may not be committed yet (testing before
                 // saving is the point of the button); every other mode

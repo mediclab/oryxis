@@ -371,6 +371,10 @@ pub enum SettingsMessage {
     SettingToggleNetworkTools,
     /// Toggle the opt-in "remote desktop" feature (`remote_desktop_enabled`).
     SettingToggleRemoteDesktop,
+    /// Toggle offline mode (`offline_mode`, `crate::offline`): the app
+    /// stops making requests of its own. Switching it off re-fires the
+    /// boot-shaped fetches so nothing waits for the next launch.
+    SettingToggleOfflineMode,
     /// Relaunch the app in place to apply a start-time-only setting (the
     /// graphics renderer). Fired from the renderer-change restart modal.
     RelaunchApp,
@@ -509,13 +513,13 @@ pub enum SettingsMessage {
     /// was read from cache; `Ok` carries the font bytes to hand to
     /// `iced::font::load`. Carries the language code so the in-memory
     /// "already loaded" guard can be cleared on failure for a retry.
-    CjkFontReady(String, Result<Vec<u8>, String>),
+    CjkFontReady(String, Result<Vec<u8>, crate::fonts::FetchError>),
     /// A terminal-pack face (issue #109) finished downloading or was
     /// read from cache; `Ok` carries the font bytes to hand to
     /// `iced::font::load`. Carries the face key (`PackFace::key`) so
     /// the in-memory "already loaded" guard can be cleared on failure
     /// for a retry.
-    PackFontReady(String, Result<Vec<u8>, String>),
+    PackFontReady(String, Result<Vec<u8>, crate::fonts::FetchError>),
     /// Retention code picked in Settings ("off" / "1d" / ... / "90d");
     /// persists and prunes immediately.
     LogsRetentionChanged(&'static str),

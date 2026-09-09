@@ -743,6 +743,23 @@ Five transports, one at a time, all carrying the same encrypted payload.
   cadence in Auto, and only on demand in Manual. None of them runs while
   the vault is locked.
 
+## Offline mode
+
+- **One switch** (Settings > Advanced, also on the first-run features
+  step): the app makes no request of its own. Update checks, the CJK and
+  terminal-pack font downloads, the plugin catalog and binaries and the
+  mirror test all stay quiet, manual ones included. Hosts, the AI
+  endpoint, sync transports, cloud accounts and the network tools panel
+  are the user's own and keep working.
+- **Says so where it would have acted.** Settings > About reports the
+  mode instead of an update result, the Plugins panel carries a banner,
+  a font that cannot be fetched toasts once. Nothing is removed; turning
+  the switch off restores everything immediately.
+- **Offline bundle.** `oryxis-offline-<platform>-<arch>` ships next to
+  every release with the plugins and font packs inside and the switch on
+  at first run. Plugins seed the ordinary cache through the same
+  signature gate a download passes; fonts are read from the bundle.
+
 ## Plugin subsystem
 
 - **Out-of-process plugins.** Cloud providers and the MCP server run as

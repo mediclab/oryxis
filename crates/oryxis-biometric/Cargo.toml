@@ -48,14 +48,35 @@ pollster = "0.4"
 # the same 0.3.x the `windows` crate pulls.
 windows-future = "0.3"
 
-# macOS: Keychain item guarded by a SecAccessControl user-presence flag,
-# so reading it intrinsically raises the Touch ID / passcode prompt. The
-# Security-framework functions are declared as externs against the stable
-# C ABI directly (in `macos.rs`), so we only need Core Foundation for the
-# CFString / CFData / CFDictionary plumbing.
+# macOS: the login Keychain for the secret at rest, LocalAuthentication
+# (Touch ID / Apple Watch / login password) for the presence prompt that
+# gates every read. The Security-framework functions are declared as
+# externs against the stable C ABI directly (in `macos.rs`), so we only
+# need Core Foundation for the CFString / CFData / CFDictionary plumbing.
+#
+# LocalAuthentication has no C ABI, so `LAContext` comes from the objc2
+# family, which the macOS build already carries through winit. Cargo
+# unifies these onto the objc2 0.6 / block2 0.6 / framework-crate 0.3
+# versions in the lock, so nothing shared moves. The `evaluatePolicy`
+# reply is a block, hence block2. Why this and not a SecAccessControl
+# item (the entitlement it needs is restricted, so it wants a paid
+# Developer Program membership) is documented in `macos.rs`.
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSError",
+    "NSString",
+] }
+objc2-local-authentication = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "LAContext",
+    "LAError",
+] }
 
 [dev-dependencies]
 # Exercises the orchestrator against the in-memory mock provider.

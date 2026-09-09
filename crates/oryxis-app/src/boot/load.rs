@@ -735,14 +735,10 @@ impl Oryxis {
                         }
                     };
             }
-            if let Ok(Some(v)) = vault.get_setting("download_mirror") {
-                let choice = crate::net_mirror::MirrorChoice::from_setting(&v);
-                if let crate::net_mirror::MirrorChoice::Custom(url) = &choice {
-                    self.download_mirror.url_input = url.clone();
-                }
-                self.download_mirror.choice = choice.clone();
-                crate::net_mirror::set_choice(choice);
-            }
+            // `download_mirror` and `offline_mode` are hydrated in
+            // `boot` before the unlock, next to the update settings:
+            // the boot fetches run against a vault that may still be
+            // locked, and reading them here left those on the defaults.
             self.agent.confirm = vault
                 .get_setting("agent_server_confirm")
                 .ok()

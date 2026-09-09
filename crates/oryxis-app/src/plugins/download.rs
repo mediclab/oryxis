@@ -66,6 +66,12 @@ fn catalog_url(provider_id: &str) -> String {
 /// commit landing, and it means a broken catalog degrades to the old
 /// behaviour instead of to no plugins at all.
 pub async fn fetch_manifest(provider_id: &str) -> Result<PluginManifest, PluginError> {
+    // Offline mode (`crate::offline`) is answered here, once, for every
+    // caller: the boot auto-update, the MCP migration, the panel's
+    // check and the install modal all read the same refusal.
+    if crate::offline::is_on() {
+        return Err(PluginError::Offline);
+    }
     let client = manifest_client()?;
     match fetch_catalog(&client, provider_id).await {
         Ok(manifest) => Ok(manifest),
@@ -284,6 +290,12 @@ pub async fn download_and_install(
     entry: &ManifestEntry,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<PathBuf, PluginError> {
+    // A manifest fetched before the switch flipped must not turn into a
+    // download after it: the install modal keeps its size line, the
+    // Install click reports the mode.
+    if crate::offline::is_on() {
+        return Err(PluginError::Offline);
+    }
     let binary = entry
         .binary_for_current_platform()
         .ok_or_else(|| {
@@ -294,7 +306,20 @@ pub async fn download_and_install(
         })?;
 
     let bytes = download_bytes(binary, &mut progress).await?;
+    install_verified(provider_id, &entry.version, binary, bytes)
+}
 
+/// Gate the bytes of a plugin binary and install them into the version
+/// cache. The two halves of an install that do not depend on where the
+/// bytes came from, shared by the download above and the offline
+/// bundle's seed import (`super::seed`), so an embedded copy is trusted
+/// on exactly the terms a downloaded one is.
+pub(crate) fn install_verified(
+    provider_id: &str,
+    version: &str,
+    binary: &PlatformBinary,
+    bytes: Vec<u8>,
+) -> Result<PathBuf, PluginError> {
     // Gate 1: SHA-256. Cheap, catches a corrupted / truncated
     // transfer before the more expensive signature check.
     let digest = to_hex(&Sha256::digest(&bytes));
@@ -308,6 +333,19 @@ pub async fn download_and_install(
     // Gate 2: Ed25519 signature against a baked-in trust anchor.
     verify::verify(&bytes, &binary.signature)?;
 
+    write_verified(provider_id, version, binary, &bytes)
+}
+
+/// The write half of an install, after both gates passed: atomic write
+/// into the version dir, the detached signature beside the binary, the
+/// retention prune. Takes the anchors as already checked so the seed
+/// import's test can drive it with a generated key.
+pub(crate) fn write_verified(
+    provider_id: &str,
+    version: &str,
+    binary: &PlatformBinary,
+    bytes: &[u8],
+) -> Result<PathBuf, PluginError> {
     // Both gates passed, write atomically into the version dir. The
     // sequence is `create_new` (refuses an existing partial), write,
     // `sync_all` (the file's data + metadata reach the disk), rename
@@ -315,9 +353,9 @@ pub async fn download_and_install(
     // the parent dir on Unix so the rename itself survives a power
     // loss. Without `sync_all` the rename could land before the data
     // and we'd boot with a zero-length-but-verified-named binary.
-    let dir = cache::version_dir(provider_id, &entry.version)?;
+    let dir = cache::version_dir(provider_id, version)?;
     std::fs::create_dir_all(&dir)?;
-    let final_path = cache::binary_path(provider_id, &entry.version)?;
+    let final_path = cache::binary_path(provider_id, version)?;
     let tmp_path = dir.join(format!("{}.tmp", cache::binary_name(provider_id)));
     // Clear any orphan from a previous crashed install before
     // `create_new` would otherwise reject the path.
@@ -328,7 +366,7 @@ pub async fn download_and_install(
             .write(true)
             .create_new(true)
             .open(&tmp_path)?;
-        f.write_all(&bytes)?;
+        f.write_all(bytes)?;
         f.sync_all()?;
     }
     set_executable(&tmp_path)?;

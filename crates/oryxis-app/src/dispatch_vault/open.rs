@@ -47,12 +47,21 @@ impl Oryxis {
                             self.vault_ui.state = VaultState::Unlocked;
                             self.vault_ui.error = None;
                             self.load_data_from_vault();
+                            // The app's own fetches, deferred from boot
+                            // until the onboarding had its say on
+                            // offline mode.
+                            let fetches = Task::batch(
+                                self.boot_fetch_tasks()
+                                    .into_iter()
+                                    .chain(self.unlock_fetch_tasks()),
+                            );
                             return Task::batch([
                                 self.agent_boot_task(),
                                 self.take_perf_mode_toast_task(),
                                 // Onboarding's import offer, now that
                                 // there IS a vault to import into.
                                 self.take_onboarding_import_task(),
+                                fetches,
                                 crate::widgets::focus_input(iced::widget::Id::new(
                                     "search-dashboard",
                                 )),
@@ -156,6 +165,9 @@ impl Oryxis {
                             // to here, now that the plugin rows are loaded
                             // (boot saw a locked vault with no rows).
                             unlock_tasks.extend(self.spawn_plugin_unlock_tasks());
+                            // The terminal font pack heal, now that the
+                            // picked family and weight are known.
+                            unlock_tasks.extend(self.unlock_fetch_tasks());
                             // One-time performance-mode auto-enable notice.
                             unlock_tasks.push(self.take_perf_mode_toast_task());
                             // Bring the ssh-agent up if the user left it on.

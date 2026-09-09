@@ -194,8 +194,17 @@ impl Oryxis {
                                 self.vault_ui.password_input.clear();
                                 self.vault_ui.password_visible = false;
                                 self.load_data_from_vault();
+                                // The app's own fetches, deferred from
+                                // boot until the onboarding had its say
+                                // on offline mode.
+                                let fetches = Task::batch(
+                                    self.boot_fetch_tasks()
+                                        .into_iter()
+                                        .chain(self.unlock_fetch_tasks()),
+                                );
                                 return Task::batch([
                                     bio_task,
+                                    fetches,
                                     self.agent_boot_task(),
                                     self.take_perf_mode_toast_task(),
                                     // Onboarding's import offer, now

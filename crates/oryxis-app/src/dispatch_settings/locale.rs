@@ -40,7 +40,10 @@ impl Oryxis {
                     && !self.loaded_cjk_fonts.contains(code)
                 {
                     self.loaded_cjk_fonts.insert(code.to_string());
-                    if !crate::fonts::is_language_cached(lang) {
+                    // Under offline mode the task answers at once with
+                    // its own toast; a "downloading" hint before it
+                    // would promise what is not going to happen.
+                    if !crate::fonts::is_language_cached(lang) && !crate::offline::is_on() {
                         self.set_toast(
                             crate::i18n::t("cjk_font_downloading").to_string(),
                         );
@@ -62,11 +65,19 @@ impl Oryxis {
                         target = "oryxis::fonts",
                         lang = %code,
                         error = %e,
-                        "CJK font download failed; using system fallback"
+                        "CJK font not loaded; using system fallback"
                     );
-                    // Drop the guard so a later switch can retry.
+                    // Drop the guard so a later switch (or the offline
+                    // switch going off) can retry.
                     self.loaded_cjk_fonts.remove(&code);
-                    self.set_toast(crate::i18n::t("cjk_font_failed").to_string());
+                    // The font that cannot heal says so: under offline
+                    // mode the miss is the mode's doing, not the
+                    // network's, and the toast names the switch.
+                    let key = match e {
+                        crate::fonts::FetchError::Offline => "cjk_font_offline",
+                        crate::fonts::FetchError::Other(_) => "cjk_font_failed",
+                    };
+                    self.set_toast(crate::i18n::t(key).to_string());
                     return Ok(Task::perform(
                         async {
                             tokio::time::sleep(

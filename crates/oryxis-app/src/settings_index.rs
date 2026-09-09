@@ -272,6 +272,11 @@ pub(crate) static SETTINGS_INDEX: &[SettingsIndexEntry] = &[
     e(S::Agent, "agent_server_copy_path", "ssh agent socket path copy pipe"),
     e(S::Agent, "agent_server_snippet_ssh_config", "ssh agent identityagent config snippet"),
     // ── Advanced ───────────────────────────────────────────────────
+    e(
+        S::Advanced,
+        "offline_mode",
+        "offline mode no network air gap quiet update check font plugin download disable internet",
+    ),
     e(S::Advanced, "download_mirror", "download mirror china github custom proxy project"),
     e(S::Advanced, "debug_logging", "debug logging enable log file diagnostics"),
     e(S::Advanced, "perf_overlay", "performance hud overlay fps terminal frames"),

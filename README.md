@@ -111,6 +111,12 @@ matching installer. Windows binaries are Authenticode-signed (see
   `~/.ssh/config`, PuTTY, KiTTY, WinSCP, mRemoteNG, MobaXterm,
   SecureCRT, Xshell, FinalShell, Termius or any CSV. Pick the file
   (or the sessions folder) and the format is detected for you.
+- **Offline when you say so.** One switch, offered at first run and in
+  Settings, and Oryxis makes no request of its own: no update checks,
+  no font or plugin downloads. What you configured yourself still
+  travels. For a machine that never had a network, an offline bundle
+  ships next to every release with the plugins and font packs already
+  inside and the switch already on.
 - **More than SSH.** Telnet and serial consoles for the gear that never
   learned SSH, raw TCP lines for console servers, ZMODEM transfers,
   local shells, and one-click RDP/VNC through an SSH tunnel.
@@ -277,14 +283,6 @@ tracks it interactively.
   shown before it runs).
 - **China & CJK:** Alibaba Cloud (ECS) and Tencent Cloud (CVM)
   providers.
-- **Offline mode:** one switch, offered at first run and in Settings,
-  that stops Oryxis from making any request of its own. Update checks,
-  font downloads and the plugin catalog go quiet; what still travels is
-  what you asked for, the hosts you dial and the backends you
-  configured yourself. One build, not a separate edition, so turning it
-  off gives everything back. For machines that never had a network, an
-  offline bundle download ships alongside the ordinary installer with
-  the plugins and font packs already inside and the switch already on.
 - **AI ops toolkit:** the assistant graduates from generating shell
   strings to typed, structured operations synthesized for the host's
   actual OS, with dry-run previews on every state change, an audit

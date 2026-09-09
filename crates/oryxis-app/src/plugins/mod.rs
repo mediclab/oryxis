@@ -26,6 +26,7 @@ pub mod download;
 pub mod host;
 pub mod manifest;
 pub mod provider;
+pub mod seed;
 pub mod verify;
 
 /// True when a freshly-built plugin binary sits next to the app
@@ -134,6 +135,12 @@ pub enum PluginError {
     /// Filesystem error working with the cache directory.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Offline mode is on (`crate::offline`): nothing was dialled.
+    /// Distinct from `Download` so the panel and the install modal can
+    /// point at the switch instead of at a firewall.
+    #[error("offline mode is on; plugin downloads are paused")]
+    Offline,
 }
 
 impl PluginError {
@@ -156,6 +163,7 @@ impl PluginError {
             Self::Download(_) => "plugin_err_download",
             Self::Integrity(_) => "plugin_err_integrity",
             Self::Io(_) => "plugin_err_io",
+            Self::Offline => "plugin_err_offline",
         }
     }
 }
